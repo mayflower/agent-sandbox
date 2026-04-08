@@ -51,7 +51,12 @@ The full build + deploy guide (including configuration env vars and the optional
 
 ## langchain-agent-sandbox (TypeScript) integration tests
 
-The TypeScript backend at [`clients/typescript/langchain-agent-sandbox`](../../clients/typescript/langchain-agent-sandbox) ships an integration test suite (`src/sandbox.int.test.ts`) that exercises the `K8sAgentSandbox` provider against a real cluster. It is wired into `make test-e2e` via `dev/tools/test-e2e` and is **gated by environment variables** so it skips silently when unconfigured or when `pnpm` is not available on `PATH`.
+The TypeScript backend at [`clients/typescript/langchain-agent-sandbox`](../../clients/typescript/langchain-agent-sandbox) ships two integration test suites that share the same `pnpm test:int` entry point and the same kind-cluster wiring through `dev/tools/test-e2e`:
+
+- `src/sandbox.int.test.ts` — exercises the `K8sAgentSandbox` provider directly via `sandboxStandardTests`. Backend-only; no LLM.
+- `src/agent.int.test.ts` — runs an actual `createDeepAgent` (deepagents-js) loop against the same backend with a real LLM and asserts a deterministic file-write side effect. Requires `ANTHROPIC_API_KEY` in addition to the cluster env vars below; skips cleanly without one.
+
+Both suites are **gated by environment variables** so they skip silently when unconfigured or when `pnpm` is not available on `PATH`.
 
 End-to-end local workflow against a kind cluster:
 
@@ -86,6 +91,8 @@ Recognized environment variables:
 - `LANGCHAIN_SANDBOX_TEMPLATE` (required) — name of the `SandboxTemplate` resource the test should provision sandboxes from
 - `LANGCHAIN_NAMESPACE` (optional, default: `default`) — namespace to create the `SandboxClaim` in; must contain a `sandbox-router-svc` Service
 - `KUBECONFIG` (optional, defaults to `~/.kube/config`) — `make test-e2e` sets this to `bin/KUBECONFIG` automatically
+- `ANTHROPIC_API_KEY` (required ONLY for `agent.int.test.ts`) — the agent loop test makes a small number of LLM calls per run; without this var the agent suite skips and the rest of the int suite still runs
+- `LANGCHAIN_SANDBOX_AGENT_MODEL` (optional, default: `claude-sonnet-4-5-20250929`) — override the model the agent test uses
 - The legacy names `SANDBOX_TEMPLATE` / `SANDBOX_NAMESPACE` are still accepted as fallbacks
 
 When the TS package or `pnpm` is not present, `dev/tools/test-e2e` prints a warning and continues with the Go and Python suites — TypeScript test failure does not block the rest of the e2e run. When the sandbox-router service is missing from the target namespace, the TS tunnel strategy will time out after 30 seconds with a `CONNECTION_FAILED` error; deploy the router (see section above) and re-run.
