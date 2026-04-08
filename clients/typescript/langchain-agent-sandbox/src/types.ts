@@ -103,6 +103,21 @@ export interface K8sAgentSandboxOptions {
   deleteOnClose?: boolean;
   /** The SandboxClaim name, if the sandbox was provisioned via a claim. */
   claimName?: string;
+  /**
+   * Virtual root directory for file operations.
+   *
+   * Both `uploadFiles` and `downloadFiles` virtualize paths against
+   * this root. A request for `/etc/foo` is rewritten to
+   * `<rootDir>/etc/foo` before being sent to the sandbox runtime, so
+   * the upload/download round-trip always lands in the same place.
+   *
+   * The default `/app` matches the working directory of the
+   * `python-runtime-sandbox` example image and the convention used
+   * across the project's example SandboxTemplates.
+   *
+   * @default "/app"
+   */
+  rootDir?: string;
 }
 
 /**
@@ -137,6 +152,8 @@ export interface K8sAgentSandboxCreateOptions {
    * standard test suite and by most deepagents-js examples.
    */
   initialFiles?: Record<string, string | Uint8Array>;
+  /** Virtual root directory for file operations. @default "/app" */
+  rootDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,21 +162,46 @@ export interface K8sAgentSandboxCreateOptions {
 
 /**
  * Error codes specific to the k8s-agent-sandbox provider.
+ *
+ * - `CONNECTION_FAILED` — generic transport-level connection failure
+ * - `TUNNEL_FAILED` — `kubectl port-forward` subprocess failure (distinct
+ *   from CONNECTION_FAILED because the remediation is different: check
+ *   PATH for kubectl, check kubeconfig context, check cluster reachability)
+ * - `SANDBOX_NOT_REACHABLE` — sandbox provisioned but health check fails
+ * - `HTTP_ERROR` — non-2xx response from sandbox-router
+ * - `K8S_API_ERROR` — Kubernetes API call failure
+ * - `INVALID_ARGUMENT` — caller passed invalid parameters (precondition
+ *   violation, distinct from K8S_API_ERROR which is a server-side failure)
+ * - `SANDBOX_CREATION_FAILED` — creation flow failed mid-way
+ * - `SANDBOX_NOT_FOUND` — referenced sandbox doesn't exist
+ * - `COMMAND_TIMEOUT` — execute() exceeded its timeout budget
+ * - `NOT_INITIALIZED` — operation called before initialize() (or after close())
+ * - `FILE_OPERATION_FAILED` — file upload/download failed for an
+ *   identifiable reason (permission, missing parent, etc.)
  */
 export type K8sAgentSandboxErrorCode =
   | SandboxErrorCode
   | "CONNECTION_FAILED"
+  | "TUNNEL_FAILED"
   | "SANDBOX_NOT_REACHABLE"
   | "HTTP_ERROR"
   | "K8S_API_ERROR"
+  | "INVALID_ARGUMENT"
   | "SANDBOX_CREATION_FAILED"
   | "SANDBOX_NOT_FOUND"
-  | "COMMAND_TIMEOUT";
+  | "COMMAND_TIMEOUT"
+  | "NOT_INITIALIZED"
+  | "FILE_OPERATION_FAILED";
 
 const K8S_SANDBOX_ERROR_SYMBOL = Symbol.for("k8s.agent.sandbox.error");
 
 /**
  * Custom error class for k8s-agent-sandbox operations.
+ *
+ * The optional `httpStatus` field carries the underlying HTTP status code
+ * for transport-level errors so callers can branch on the status without
+ * string-matching the message (e.g. distinguish 403 from 404 in
+ * downloadFiles error mapping).
  */
 export class K8sAgentSandboxError extends SandboxError {
   [K8S_SANDBOX_ERROR_SYMBOL] = true as const;
@@ -170,6 +212,7 @@ export class K8sAgentSandboxError extends SandboxError {
     message: string,
     public readonly code: K8sAgentSandboxErrorCode,
     public override readonly cause?: Error,
+    public readonly httpStatus?: number,
   ) {
     super(message, code as SandboxErrorCode, cause);
     Object.setPrototypeOf(this, K8sAgentSandboxError.prototype);
@@ -183,3 +226,23 @@ export class K8sAgentSandboxError extends SandboxError {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Health check result
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated union returned by {@link K8sAgentSandbox.healthz}.
+ *
+ * The previous bare `boolean` form collapsed three different failure
+ * modes into a single `false`, so callers couldn't distinguish "sandbox
+ * is genuinely unhealthy" from "we couldn't ask the question". This shape
+ * preserves the reason category and the underlying error.
+ */
+export type HealthzResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "unreachable" | "http-error" | "timeout" | "unknown";
+      error: K8sAgentSandboxError;
+    };

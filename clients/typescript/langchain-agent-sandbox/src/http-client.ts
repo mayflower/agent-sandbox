@@ -21,7 +21,7 @@
  */
 
 import type { ConnectionStrategy } from "./connection.js";
-import { K8sAgentSandboxError } from "./types.js";
+import { K8sAgentSandboxError, type HealthzResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Response types (match the sandbox runtime's JSON shapes)
@@ -121,6 +121,8 @@ export class SandboxRouterClient {
       throw new K8sAgentSandboxError(
         `Execute request failed (HTTP ${response.status}): ${text}`,
         "HTTP_ERROR",
+        undefined,
+        response.status,
       );
     }
 
@@ -135,6 +137,7 @@ export class SandboxRouterClient {
         `Execute response was not valid JSON (HTTP ${response.status}): ${text.slice(0, 200)}`,
         "HTTP_ERROR",
         parseErr instanceof Error ? parseErr : undefined,
+        response.status,
       );
     }
 
@@ -155,16 +158,22 @@ export class SandboxRouterClient {
     const encoded = encodeURIComponent(relativePath);
     const response = await this.#request("GET", `download/${encoded}`);
 
+    // Carry the HTTP status on the error so callers branch on the
+    // status (typed) instead of string-matching the message.
     if (response.status === 404) {
       throw new K8sAgentSandboxError(
         `File not found: ${relativePath}`,
         "FILE_OPERATION_FAILED",
+        undefined,
+        404,
       );
     }
     if (response.status === 403) {
       throw new K8sAgentSandboxError(
         `Access denied: ${relativePath}`,
         "FILE_OPERATION_FAILED",
+        undefined,
+        403,
       );
     }
     if (!response.ok) {
@@ -172,6 +181,8 @@ export class SandboxRouterClient {
       throw new K8sAgentSandboxError(
         `Download failed (HTTP ${response.status}): ${text}`,
         "HTTP_ERROR",
+        undefined,
+        response.status,
       );
     }
 
@@ -180,13 +191,53 @@ export class SandboxRouterClient {
   }
 
   /**
-   * Health check. Returns true on 200, false on any error.
+   * Health check returning a discriminated union so callers can tell
+   * "sandbox is unhealthy" apart from "we couldn't ask the question".
+   *
+   * The bare `boolean` form this replaces collapsed three failure modes
+   * (network unreachable, HTTP error, programming bug) into a single
+   * `false`, which is the textbook silent-failure pattern called out in
+   * the project rules.
    */
-  async healthz(): Promise<boolean> {
+  async healthzResult(): Promise<HealthzResult> {
     try {
-      return await this.healthCheck();
-    } catch {
-      return false;
+      const ok = await this.healthCheck();
+      if (ok) return { ok: true };
+      // healthCheck() returned false without throwing means a non-ok
+      // HTTP response — already wrapped as HTTP_ERROR by the caller
+      // path, but the bare false fall-through here is defensive.
+      return {
+        ok: false,
+        reason: "http-error",
+        error: new K8sAgentSandboxError(
+          "Health check returned non-200 without throwing",
+          "HTTP_ERROR",
+        ),
+      };
+    } catch (err) {
+      const wrapped =
+        err instanceof K8sAgentSandboxError
+          ? err
+          : new K8sAgentSandboxError(
+              `Health check threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+              "HTTP_ERROR",
+              err instanceof Error ? err : undefined,
+            );
+      const reason: HealthzResult & { ok: false } = {
+        ok: false,
+        reason:
+          wrapped.code === "CONNECTION_FAILED" ||
+          wrapped.code === "TUNNEL_FAILED" ||
+          wrapped.code === "SANDBOX_NOT_REACHABLE"
+            ? "unreachable"
+            : wrapped.code === "COMMAND_TIMEOUT"
+              ? "timeout"
+              : wrapped.code === "HTTP_ERROR"
+                ? "http-error"
+                : "unknown",
+        error: wrapped,
+      };
+      return reason;
     }
   }
 

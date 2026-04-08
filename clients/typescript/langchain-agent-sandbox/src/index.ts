@@ -78,6 +78,7 @@ export type {
   K8sTunnelConnectionConfig,
   K8sConnectionConfig,
   K8sAgentSandboxErrorCode,
+  HealthzResult,
 } from "./types.js";
 
 export { K8sAgentSandboxError } from "./types.js";

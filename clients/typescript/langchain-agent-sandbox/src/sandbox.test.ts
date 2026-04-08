@@ -22,7 +22,7 @@ import { K8sAgentSandboxError } from "./types.js";
 
 const mockExecute = vi.fn();
 const mockDownload = vi.fn();
-const mockHealthz = vi.fn();
+const mockHealthzResult = vi.fn();
 const mockHealthCheck = vi.fn();
 const mockClose = vi.fn();
 
@@ -31,7 +31,7 @@ vi.mock("./http-client.js", () => ({
     constructor() {}
     execute = mockExecute;
     download = mockDownload;
-    healthz = mockHealthz;
+    healthzResult = mockHealthzResult;
     healthCheck = mockHealthCheck;
     close = mockClose;
   },
@@ -73,7 +73,7 @@ describe("K8sAgentSandbox", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockHealthz.mockResolvedValue(true);
+    mockHealthzResult.mockResolvedValue({ ok: true });
     mockHealthCheck.mockResolvedValue(true);
     mockClose.mockResolvedValue(undefined);
 
@@ -266,14 +266,41 @@ describe("K8sAgentSandbox", () => {
       expect(responses[0]!.error).toBe("permission_denied");
     });
 
-    it("should handle files without directory prefix", async () => {
+    it("should virtualize relative paths against rootDir", async () => {
       const content = new TextEncoder().encode("data");
       const responses = await sandbox.uploadFiles([["test.txt", content]]);
 
       expect(responses[0]!.error).toBeNull();
-      // Should not include mkdir since there's no directory
+      // The wrapped cmd is `sh -c 'mkdir -p '\''/app'\'' && ... > '\''/app/test.txt'\'''`
+      // — single quotes are doubly-escaped through the sh -c wrapping
+      // and the inner shellQuote. Match on the path strings directly,
+      // which appear unmodified (the outer escape only affects the
+      // surrounding single quotes, not the path content).
       const cmd = mockExecute.mock.calls[0]![0] as string;
-      expect(cmd).not.toContain("mkdir");
+      expect(cmd).toContain("mkdir -p");
+      expect(cmd).toContain("/app/test.txt");
+    });
+
+    it("should not double-prefix paths already under rootDir", async () => {
+      const content = new TextEncoder().encode("data");
+      const responses = await sandbox.uploadFiles([["/app/already.txt", content]]);
+
+      expect(responses[0]!.error).toBeNull();
+      // /app/already.txt should NOT become /app/app/already.txt
+      const cmd = mockExecute.mock.calls[0]![0] as string;
+      expect(cmd).toContain("/app/already.txt");
+      expect(cmd).not.toContain("/app/app/");
+    });
+
+    it("should virtualize absolute paths outside rootDir", async () => {
+      const content = new TextEncoder().encode("data");
+      const responses = await sandbox.uploadFiles([["/etc/foo.conf", content]]);
+
+      expect(responses[0]!.error).toBeNull();
+      // /etc/foo.conf should be rewritten as /app/etc/foo.conf so the
+      // upload/download round-trip is symmetric.
+      const cmd = mockExecute.mock.calls[0]![0] as string;
+      expect(cmd).toContain("/app/etc/foo.conf");
     });
   });
 
@@ -289,15 +316,18 @@ describe("K8sAgentSandbox", () => {
       const responses = await sandbox.downloadFiles(["/app/test.txt"]);
 
       expect(responses).toHaveLength(1);
+      // The caller-supplied path is preserved on the response so the
+      // caller can correlate inputs with outputs.
       expect(responses[0]!.path).toBe("/app/test.txt");
       expect(responses[0]!.content).toEqual(content);
       expect(responses[0]!.error).toBeNull();
 
-      // Should strip /app/ prefix for the HTTP call
+      // /app/test.txt is already under rootDir; toRouterDownloadPath
+      // strips the /app/ prefix for the runtime endpoint.
       expect(mockDownload).toHaveBeenCalledWith("test.txt");
     });
 
-    it("should strip /app/ prefix from paths", async () => {
+    it("should strip /app/ prefix from paths already under rootDir", async () => {
       mockDownload.mockResolvedValue(new Uint8Array());
 
       await sandbox.downloadFiles(["/app/nested/dir/file.py"]);
@@ -305,9 +335,11 @@ describe("K8sAgentSandbox", () => {
       expect(mockDownload).toHaveBeenCalledWith("nested/dir/file.py");
     });
 
-    it("should strip leading / for non-/app paths", async () => {
+    it("should virtualize absolute paths outside rootDir", async () => {
       mockDownload.mockResolvedValue(new Uint8Array());
 
+      // /other/path.txt is virtualized to /app/other/path.txt, then
+      // the /app/ prefix is stripped for the router.
       await sandbox.downloadFiles(["/other/path.txt"]);
 
       expect(mockDownload).toHaveBeenCalledWith("other/path.txt");
@@ -315,7 +347,12 @@ describe("K8sAgentSandbox", () => {
 
     it("should handle file not found", async () => {
       mockDownload.mockRejectedValue(
-        new K8sAgentSandboxError("File not found: missing.txt", "FILE_OPERATION_FAILED"),
+        new K8sAgentSandboxError(
+          "File not found: missing.txt",
+          "FILE_OPERATION_FAILED",
+          undefined,
+          404,
+        ),
       );
 
       const responses = await sandbox.downloadFiles(["/app/missing.txt"]);
@@ -324,9 +361,16 @@ describe("K8sAgentSandbox", () => {
       expect(responses[0]!.content).toBeNull();
     });
 
-    it("should handle access denied", async () => {
+    it("should handle access denied via httpStatus", async () => {
+      // The new error mapping uses err.httpStatus instead of
+      // string-matching the message — pin that contract.
       mockDownload.mockRejectedValue(
-        new K8sAgentSandboxError("Access denied: /etc/shadow", "FILE_OPERATION_FAILED"),
+        new K8sAgentSandboxError(
+          "Access denied: /etc/shadow",
+          "FILE_OPERATION_FAILED",
+          undefined,
+          403,
+        ),
       );
 
       const responses = await sandbox.downloadFiles(["/etc/shadow"]);
@@ -338,7 +382,12 @@ describe("K8sAgentSandbox", () => {
       mockDownload
         .mockResolvedValueOnce(new TextEncoder().encode("ok"))
         .mockRejectedValueOnce(
-          new K8sAgentSandboxError("File not found", "FILE_OPERATION_FAILED"),
+          new K8sAgentSandboxError(
+            "File not found",
+            "FILE_OPERATION_FAILED",
+            undefined,
+            404,
+          ),
         );
 
       const responses = await sandbox.downloadFiles([
@@ -365,10 +414,28 @@ describe("K8sAgentSandbox", () => {
   });
 
   describe("healthz", () => {
-    it("should delegate to HTTP client", async () => {
-      mockHealthz.mockResolvedValue(true);
+    it("should return ok=true when sandbox is healthy", async () => {
+      mockHealthzResult.mockResolvedValue({ ok: true });
       const result = await sandbox.healthz();
-      expect(result).toBe(true);
+      expect(result.ok).toBe(true);
+    });
+
+    it("should return categorized failure when sandbox is unreachable", async () => {
+      const err = new K8sAgentSandboxError(
+        "ECONNREFUSED",
+        "CONNECTION_FAILED",
+      );
+      mockHealthzResult.mockResolvedValue({
+        ok: false,
+        reason: "unreachable",
+        error: err,
+      });
+      const result = await sandbox.healthz();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("unreachable");
+        expect(result.error).toBe(err);
+      }
     });
   });
 
@@ -429,16 +496,25 @@ describe("K8sAgentSandbox", () => {
         },
       });
 
-      // Two execute() calls are issued by the inherited uploadFiles
-      // implementation — one per file. Verify both commands hit the
-      // mock with the right shell-level base64 shapes.
+      // Two execute() calls are issued — one per file. Both commands
+      // should reference the virtualized absolute path: "config.json"
+      // becomes "/app/config.json", and "/app/data.bin" stays as
+      // "/app/data.bin" (already under rootDir so no double-prefix).
+      // Match on path substrings rather than the full quoted form
+      // because sh -c wrapping doubly-escapes the inner single quotes.
       const commands = mockExecute.mock.calls.map((c) => c[0] as string);
       expect(commands.length).toBe(2);
       expect(
-        commands.some((cmd) => cmd.includes("'config.json'") && cmd.includes("base64 -d")),
+        commands.some(
+          (cmd) =>
+            cmd.includes("/app/config.json") && cmd.includes("base64 -d"),
+        ),
       ).toBe(true);
       expect(
-        commands.some((cmd) => cmd.includes("'/app/data.bin'") && cmd.includes("base64 -d")),
+        commands.some(
+          (cmd) =>
+            cmd.includes("/app/data.bin") && cmd.includes("base64 -d"),
+        ),
       ).toBe(true);
 
       await sb.close();
@@ -512,7 +588,7 @@ describe("K8sAgentSandbox", () => {
 
     it("should refuse empty labels without confirmDeleteAll", async () => {
       await expect(K8sAgentSandbox.deleteAll({}, "test-ns")).rejects.toMatchObject({
-        code: "K8S_API_ERROR",
+        code: "INVALID_ARGUMENT",
         message: expect.stringContaining("deleteAll refused"),
       });
       expect(mockListSandboxClaims).not.toHaveBeenCalled();

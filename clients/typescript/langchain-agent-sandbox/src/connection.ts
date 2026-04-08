@@ -113,6 +113,29 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
   #process: ChildProcess | null = null;
   #baseUrl: string | null = null;
   #localPort: number | null = null;
+  /**
+   * Captures spawn-time errors (e.g. ENOENT when `kubectl` is not on
+   * PATH). Without an explicit `error` listener, Node would crash the
+   * entire process on a spawn failure during `connect()`. We attach
+   * a listener immediately after spawn and reuse the captured value
+   * to surface a typed error.
+   */
+  #spawnError: Error | null = null;
+  /**
+   * Set by the `exit` listener so subsequent `verifyConnection()` and
+   * `connect()` calls can detect a tunnel that died after the initial
+   * handshake (k8s API server lost the watch, pod evicted, network
+   * partition). Without this, a dead tunnel only surfaces on the next
+   * HTTP attempt as a generic ECONNREFUSED.
+   */
+  #exited: boolean = false;
+  /**
+   * Buffered stderr from the spawned process. Collected via a
+   * `data` listener (not `for await` of `process.stderr`) so we can
+   * inspect it from `verifyConnection()` without consuming the
+   * stream and starving subsequent reads.
+   */
+  #stderrBuffer: string = "";
 
   constructor(config: K8sTunnelConnectionConfig) {
     this.#namespace = config.namespace ?? "default";
@@ -120,43 +143,110 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
   }
 
   async connect(): Promise<string> {
-    // Re-use existing connection if still alive
-    if (this.#baseUrl && this.#process && this.#process.exitCode === null) {
+    // Re-use existing connection if still alive AND port still reachable.
+    // The exitCode check alone is insufficient: a tunnel can be up at
+    // the process level but the underlying TCP forward can be dead
+    // (k8s API watch lost, pod evicted). Re-probing the port catches
+    // that case and forces a reconnect.
+    if (
+      this.#baseUrl &&
+      this.#process &&
+      this.#process.exitCode === null &&
+      !this.#exited &&
+      this.#localPort !== null &&
+      (await this.#isPortReachable(this.#localPort))
+    ) {
       return this.#baseUrl;
     }
 
-    // Clean up any dead process
+    // Clean up any dead/stale process
     if (this.#process) {
       await this.close();
     }
 
+    // Reset state for a fresh attempt
+    this.#spawnError = null;
+    this.#exited = false;
+    this.#stderrBuffer = "";
+
     // Find a free port
     this.#localPort = await this.#getFreePort();
 
-    // Start kubectl port-forward
-    this.#process = spawn(
-      "kubectl",
-      [
-        "port-forward",
-        ROUTER_SERVICE_NAME,
-        `${this.#localPort}:8080`,
-        "-n",
-        this.#namespace,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    // Start kubectl port-forward.
+    let proc: ChildProcess;
+    try {
+      proc = spawn(
+        "kubectl",
+        [
+          "port-forward",
+          ROUTER_SERVICE_NAME,
+          `${this.#localPort}:8080`,
+          "-n",
+          this.#namespace,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (err) {
+      // `spawn` itself can throw on Windows or when the system runs out
+      // of file descriptors. Wrap as TUNNEL_FAILED so the caller can
+      // distinguish from a generic CONNECTION_FAILED.
+      throw new K8sAgentSandboxError(
+        `Failed to spawn kubectl port-forward: ${err instanceof Error ? err.message : String(err)}`,
+        "TUNNEL_FAILED",
+        err instanceof Error ? err : undefined,
+      );
+    }
+    this.#process = proc;
+
+    // Critical: attach an error listener BEFORE the spawn finishes
+    // resolving. Without this, an `error` event (e.g. ENOENT for
+    // missing kubectl) becomes an unhandled `error` event and crashes
+    // the Node process.
+    proc.on("error", (err) => {
+      this.#spawnError = err;
+      this.#exited = true;
+    });
+    // Track exit so verifyConnection() can detect post-handshake death.
+    proc.on("exit", () => {
+      this.#exited = true;
+    });
+    // Buffer stderr non-destructively so we can read it from
+    // verifyConnection() without racing the close path.
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      this.#stderrBuffer += chunk.toString("utf-8");
+    });
 
     // Wait for the port to become reachable
     const startTime = Date.now();
     const timeoutMs = this.#portForwardReadyTimeout * 1000;
 
     while (Date.now() - startTime < timeoutMs) {
-      // Check if process died
-      if (this.#process.exitCode !== null) {
-        const stderr = await this.#collectStderr();
+      // Check spawn-time error first (ENOENT etc.). Capture the
+      // message + the error object BEFORE awaiting close() — TS's
+      // control-flow analysis invalidates narrowing through awaits
+      // even for local consts in some configurations, so we pull
+      // the values out of the field once and reuse them.
+      if (this.#spawnError !== null) {
+        const capturedSpawnErr: Error = this.#spawnError;
+        const capturedMessage = capturedSpawnErr.message;
+        await this.close();
         throw new K8sAgentSandboxError(
-          `kubectl port-forward crashed: ${stderr}`,
-          "CONNECTION_FAILED",
+          `kubectl port-forward could not be spawned: ${capturedMessage}` +
+            (capturedMessage.includes("ENOENT")
+              ? " (is `kubectl` on $PATH?)"
+              : ""),
+          "TUNNEL_FAILED",
+          capturedSpawnErr,
+        );
+      }
+
+      // Check if process died after spawning
+      if (this.#exited || proc.exitCode !== null) {
+        const stderr = this.#stderrBuffer.trim() || "(empty stderr)";
+        await this.close();
+        throw new K8sAgentSandboxError(
+          `kubectl port-forward crashed before becoming reachable: ${stderr}`,
+          "TUNNEL_FAILED",
         );
       }
 
@@ -170,10 +260,12 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
       await sleep(500);
     }
 
+    const stderr = this.#stderrBuffer.trim();
     await this.close();
     throw new K8sAgentSandboxError(
-      "Failed to establish kubectl port-forward tunnel within timeout",
-      "CONNECTION_FAILED",
+      `Failed to establish kubectl port-forward tunnel within ${this.#portForwardReadyTimeout}s` +
+        (stderr ? `; stderr: ${stderr}` : ""),
+      "TUNNEL_FAILED",
     );
   }
 
@@ -202,18 +294,47 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
       } finally {
         this.#process = null;
         this.#baseUrl = null;
+        this.#localPort = null;
+        this.#exited = false;
+        this.#spawnError = null;
+        this.#stderrBuffer = "";
       }
     }
   }
 
   async verifyConnection(): Promise<void> {
-    if (this.#process && this.#process.exitCode !== null) {
-      const stderr = await this.#collectStderr();
+    // Spawn-time error captured by the `error` listener.
+    const spawnErr: Error | null = this.#spawnError;
+    if (spawnErr !== null) {
       await this.close();
       throw new K8sAgentSandboxError(
-        `kubectl port-forward crashed: ${stderr}`,
-        "CONNECTION_FAILED",
+        `kubectl port-forward subprocess errored: ${spawnErr.message}`,
+        "TUNNEL_FAILED",
+        spawnErr,
       );
+    }
+    // Process died after the initial handshake.
+    if (this.#process && (this.#exited || this.#process.exitCode !== null)) {
+      const stderr = this.#stderrBuffer.trim() || "(empty stderr)";
+      await this.close();
+      throw new K8sAgentSandboxError(
+        `kubectl port-forward died: ${stderr}`,
+        "TUNNEL_FAILED",
+      );
+    }
+    // Process is alive but the underlying TCP forward may be dead
+    // (lost watch, pod evicted, network partition). Probe the local
+    // port to confirm. If unreachable, tear down so the next request
+    // gets a fresh tunnel via `connect()`.
+    if (this.#process && this.#localPort !== null) {
+      const reachable = await this.#isPortReachable(this.#localPort);
+      if (!reachable) {
+        await this.close();
+        throw new K8sAgentSandboxError(
+          `kubectl port-forward is alive but the local port ${this.#localPort} is not reachable; tunnel will be re-established on next call`,
+          "TUNNEL_FAILED",
+        );
+      }
     }
   }
 
@@ -243,20 +364,14 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
         socket.destroy();
         resolve(false);
       });
-      socket.setTimeout(100, () => {
+      // 500ms is more forgiving than the previous 100ms which produced
+      // false negatives on slow CI hosts. Still tight enough that the
+      // 30s outer loop completes within budget.
+      socket.setTimeout(500, () => {
         socket.destroy();
         resolve(false);
       });
     });
-  }
-
-  async #collectStderr(): Promise<string> {
-    if (!this.#process?.stderr) return "(no stderr)";
-    const chunks: Buffer[] = [];
-    for await (const chunk of this.#process.stderr) {
-      chunks.push(chunk as Buffer);
-    }
-    return Buffer.concat(chunks).toString("utf-8").trim() || "(empty stderr)";
   }
 }
 

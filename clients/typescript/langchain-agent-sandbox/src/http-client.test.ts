@@ -213,23 +213,33 @@ describe("SandboxRouterClient", () => {
     });
   });
 
-  describe("healthz", () => {
-    it("should return true on 200", async () => {
+  describe("healthzResult", () => {
+    it("should return ok=true on 200", async () => {
       mockFetchResponse(200, { status: "ok" });
-      const healthy = await client.healthz();
-      expect(healthy).toBe(true);
+      const result = await client.healthzResult();
+      expect(result.ok).toBe(true);
     });
 
-    it("should return false on error", async () => {
+    it("should categorize network failure as unreachable", async () => {
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
-      const healthy = await client.healthz();
-      expect(healthy).toBe(false);
+      const result = await client.healthzResult();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("unreachable");
+        expect(result.error.code).toBe("CONNECTION_FAILED");
+      }
     });
 
-    it("should return false on non-200", async () => {
+    it("should categorize non-200 as http-error and preserve status", async () => {
       mockFetchResponse(503, "Service Unavailable");
-      const healthy = await client.healthz();
-      expect(healthy).toBe(false);
+      const result = await client.healthzResult();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        // healthCheck() returns response.ok (false) without throwing
+        // for non-2xx, so the result branch is the "false-without-throw"
+        // fallback at http-client.ts.
+        expect(result.reason).toBe("http-error");
+      }
     });
   });
 

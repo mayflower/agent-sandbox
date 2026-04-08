@@ -81,14 +81,17 @@ sandboxStandardTests({
   resolvePath: (name) => name,
 });
 
-describe("K8sAgentSandbox Provider-Specific Tests", () => {
+// Use describe.skipIf so missing-env-var runs report as SKIPPED in
+// the vitest output, not as PASS. The previous `if (!template) return;`
+// pattern inside each `it` block let the tests show up as 5 fake-passing
+// in CI dashboards even when no template was configured.
+describe.skipIf(!template)("K8sAgentSandbox Provider-Specific Tests", () => {
   let sandbox: K8sAgentSandbox;
 
   beforeAll(async () => {
-    if (!template) return;
     sandbox = await withRetry(() =>
       K8sAgentSandbox.create({
-        template,
+        template: template!,
         namespace,
         deleteOnClose: true,
         labels: CI_LABELS,
@@ -98,16 +101,17 @@ describe("K8sAgentSandbox Provider-Specific Tests", () => {
 
   afterAll(async () => {
     try {
-      await sandbox?.close();
+      await sandbox?.close({ throwOnError: false });
     } catch {
-      // Ignore cleanup errors
+      // close() with throwOnError:false should not throw, but be
+      // defensive: teardown failures must not fail an otherwise-green
+      // suite.
     }
   }, TEST_TIMEOUT);
 
   it(
     "should have a valid sandbox id",
     async () => {
-      if (!template) return;
       expect(sandbox.id).toBeTruthy();
       expect(typeof sandbox.id).toBe("string");
     },
@@ -117,7 +121,6 @@ describe("K8sAgentSandbox Provider-Specific Tests", () => {
   it(
     "should report as running after creation",
     async () => {
-      if (!template) return;
       expect(sandbox.isRunning).toBe(true);
     },
     TEST_TIMEOUT,
@@ -126,9 +129,8 @@ describe("K8sAgentSandbox Provider-Specific Tests", () => {
   it(
     "should pass health check",
     async () => {
-      if (!template) return;
-      const healthy = await sandbox.healthz();
-      expect(healthy).toBe(true);
+      const result = await sandbox.healthz();
+      expect(result.ok).toBe(true);
     },
     TEST_TIMEOUT,
   );
@@ -136,7 +138,6 @@ describe("K8sAgentSandbox Provider-Specific Tests", () => {
   it(
     "should execute a basic command",
     async () => {
-      if (!template) return;
       const result = await sandbox.execute("echo 'hello from k8s sandbox'");
       expect(result.exitCode).toBe(0);
       expect(result.output).toContain("hello from k8s sandbox");
@@ -147,7 +148,6 @@ describe("K8sAgentSandbox Provider-Specific Tests", () => {
   it(
     "should have a claim name",
     async () => {
-      if (!template) return;
       expect(sandbox.claimName).toMatch(/^sandbox-claim-/);
     },
     TEST_TIMEOUT,
