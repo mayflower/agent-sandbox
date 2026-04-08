@@ -130,12 +130,18 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
    */
   #exited: boolean = false;
   /**
-   * Buffered stderr from the spawned process. Collected via a
-   * `data` listener (not `for await` of `process.stderr`) so we can
-   * inspect it from `verifyConnection()` without consuming the
-   * stream and starving subsequent reads.
+   * Buffered stderr from the spawned process, capped at
+   * `#STDERR_BUFFER_MAX` bytes. Collected via a `data` listener
+   * (not `for await` of `process.stderr`) so we can inspect it from
+   * `verifyConnection()` without consuming the stream and starving
+   * subsequent reads. The cap prevents an unbounded memory leak when
+   * `kubectl port-forward` enters a retry loop and emits stderr
+   * indefinitely — without it, a long-running sandbox could
+   * accumulate megabytes of "error copying from local connection to
+   * remote address" lines across the lifetime of the tunnel.
    */
   #stderrBuffer: string = "";
+  static readonly #STDERR_BUFFER_MAX = 64 * 1024;
 
   constructor(config: K8sTunnelConnectionConfig) {
     this.#namespace = config.namespace ?? "default";
@@ -211,9 +217,23 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
       this.#exited = true;
     });
     // Buffer stderr non-destructively so we can read it from
-    // verifyConnection() without racing the close path.
+    // verifyConnection() without racing the close path. Cap the
+    // buffer at #STDERR_BUFFER_MAX bytes by truncating from the
+    // FRONT — the most recent stderr is the most diagnostic for
+    // "what just broke", so the tail is what we keep.
     proc.stderr?.on("data", (chunk: Buffer) => {
       this.#stderrBuffer += chunk.toString("utf-8");
+      if (
+        this.#stderrBuffer.length > TunnelConnectionStrategy.#STDERR_BUFFER_MAX
+      ) {
+        // Slice to the last STDERR_BUFFER_MAX chars and prepend a
+        // marker so the consumer knows the head was dropped.
+        this.#stderrBuffer =
+          "[...stderr truncated...]\n" +
+          this.#stderrBuffer.slice(
+            -TunnelConnectionStrategy.#STDERR_BUFFER_MAX,
+          );
+      }
     });
 
     // Wait for the port to become reachable

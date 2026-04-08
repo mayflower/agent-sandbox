@@ -104,20 +104,35 @@ export interface K8sAgentSandboxOptions {
   /** The SandboxClaim name, if the sandbox was provisioned via a claim. */
   claimName?: string;
   /**
-   * Virtual root directory for file operations.
+   * Virtual root directory for file operations, as exposed to the LLM.
    *
    * Both `uploadFiles` and `downloadFiles` virtualize paths against
    * this root. A request for `/etc/foo` is rewritten to
    * `<rootDir>/etc/foo` before being sent to the sandbox runtime, so
    * the upload/download round-trip always lands in the same place.
    *
-   * The default `/app` matches the working directory of the
-   * `python-runtime-sandbox` example image and the convention used
-   * across the project's example SandboxTemplates.
+   * `rootDir` MUST be equal to or a subdirectory of `runtimeWorkDir`
+   * (the runtime image's actual working directory). The constructor
+   * rejects mis-aligned configurations with `INVALID_ARGUMENT` because
+   * the sandbox runtime image hard-pins its own filesystem chroot to
+   * `runtimeWorkDir` and refuses to serve files outside it.
    *
    * @default "/app"
    */
   rootDir?: string;
+  /**
+   * The runtime image's actual working directory inside the sandbox
+   * pod. The sandbox-router endpoint resolves all file paths relative
+   * to this directory and refuses to serve anything outside it.
+   *
+   * Override this only if you've built a custom runtime image whose
+   * working directory differs from the standard `python-runtime-sandbox`.
+   * `rootDir` (the LLM-facing virtual root) must equal or be a
+   * subdirectory of this path.
+   *
+   * @default "/app"
+   */
+  runtimeWorkDir?: string;
 }
 
 /**
@@ -154,6 +169,8 @@ export interface K8sAgentSandboxCreateOptions {
   initialFiles?: Record<string, string | Uint8Array>;
   /** Virtual root directory for file operations. @default "/app" */
   rootDir?: string;
+  /** Runtime image's working directory. @default "/app" */
+  runtimeWorkDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +241,52 @@ export class K8sAgentSandboxError extends SandboxError {
       error !== null &&
       (error as Record<symbol, unknown>)[K8S_SANDBOX_ERROR_SYMBOL] === true
     );
+  }
+}
+
+/**
+ * Subclass for batch file operations (uploadFiles / downloadFiles) that
+ * partially failed. Carries the full per-file response array so callers
+ * can recover the entries that DID succeed instead of losing the partial
+ * state when a transport error aborts the batch.
+ *
+ * Without this typed carrier, partial results would only be reachable
+ * via a side-channel cast like `(err as any).partialResults`, which is
+ * invisible to TypeScript and any caller that doesn't already know the
+ * undocumented field name. The previous review flagged that anti-pattern
+ * as silent data loss; this class fixes it by making the field
+ * first-class on a dedicated subclass that callers can `instanceof`-check.
+ *
+ * The generic parameter `T` lets callers narrow to the right response
+ * shape (`FileUploadResponse[]` for upload, `FileDownloadResponse[]`
+ * for download) without a second runtime cast.
+ */
+export class K8sBatchOperationError<T> extends K8sAgentSandboxError {
+  // `name` is intentionally inherited from K8sAgentSandboxError (a
+  // narrow string-literal type that TS can't widen). Use `instanceof
+  // K8sBatchOperationError` to distinguish at runtime.
+
+  constructor(
+    message: string,
+    code: K8sAgentSandboxErrorCode,
+    /**
+     * The full per-file response array, index-aligned with the input.
+     * Successful entries have `error: null` and (for downloads)
+     * non-null `content`. Failed entries carry their error code.
+     */
+    public readonly partialResults: readonly T[],
+    /**
+     * All transport errors collected from the batch. The base class's
+     * `cause` only holds the first one; this list preserves every
+     * error's `code`/`httpStatus`/etc. so callers don't lose sibling
+     * failure modes when multiple files fail with different codes.
+     */
+    public readonly transportErrors: readonly K8sAgentSandboxError[],
+    cause?: Error,
+    httpStatus?: number,
+  ) {
+    super(message, code, cause, httpStatus);
+    Object.setPrototypeOf(this, K8sBatchOperationError.prototype);
   }
 }
 

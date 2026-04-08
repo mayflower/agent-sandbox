@@ -20,6 +20,8 @@
  * k8s-agent-sandbox controller via the sandbox-router HTTP API.
  */
 
+import * as posix from "node:path/posix";
+
 import {
   BaseSandbox,
   type ExecuteResponse,
@@ -33,6 +35,7 @@ import { createConnectionStrategy } from "./connection.js";
 import { SandboxRouterClient } from "./http-client.js";
 import {
   K8sAgentSandboxError,
+  K8sBatchOperationError,
   type K8sAgentSandboxOptions,
   type K8sAgentSandboxCreateOptions,
   type K8sConnectionConfig,
@@ -67,6 +70,7 @@ export class K8sAgentSandbox extends BaseSandbox {
   #deleteOnClose: boolean;
   #isRunning: boolean;
   #rootDir: string;
+  #runtimeWorkDir: string;
 
   get id(): string {
     return this.#sandboxId;
@@ -86,6 +90,10 @@ export class K8sAgentSandbox extends BaseSandbox {
 
   get rootDir(): string {
     return this.#rootDir;
+  }
+
+  get runtimeWorkDir(): string {
+    return this.#runtimeWorkDir;
   }
 
   /**
@@ -110,16 +118,40 @@ export class K8sAgentSandbox extends BaseSandbox {
     this.#claimName = options.claimName ?? null;
     this.#isRunning = false;
     this.#k8sClient = k8sClient ?? null;
-    // Normalize the root dir: must be absolute, no trailing slash
-    // (except for "/" itself).
-    const rawRoot = options.rootDir ?? "/app";
-    if (!rawRoot.startsWith("/")) {
+    // Normalize and validate runtimeWorkDir + rootDir.
+    //
+    // Both must be absolute paths. We run them through `posix.normalize`
+    // to defang `..`/`.`/`//` segments — without this, an attacker (or
+    // a buggy caller) could pass `rootDir: "//"` and the trailing-slash
+    // strip would yield `""`, silently disabling the chroot. Or
+    // `rootDir: "/app/.."` which would normalize to `/` and pass the
+    // startsWith check trivially.
+    //
+    // After normalization, `rootDir` MUST be equal to or strictly
+    // under `runtimeWorkDir`. The sandbox runtime image hard-pins its
+    // own filesystem chroot to its working directory and refuses to
+    // serve files outside it (the python-runtime-sandbox image
+    // explicitly uses `os.path.realpath + commonpath` to enforce
+    // this). A `rootDir` outside `runtimeWorkDir` would silently 403
+    // every download with no signal to the caller.
+    this.#runtimeWorkDir = K8sAgentSandbox.#normalizeAbsolutePath(
+      options.runtimeWorkDir ?? "/app",
+      "runtimeWorkDir",
+    );
+    this.#rootDir = K8sAgentSandbox.#normalizeAbsolutePath(
+      options.rootDir ?? "/app",
+      "rootDir",
+    );
+    if (
+      this.#rootDir !== this.#runtimeWorkDir &&
+      this.#runtimeWorkDir !== "/" &&
+      !this.#rootDir.startsWith(this.#runtimeWorkDir + "/")
+    ) {
       throw new K8sAgentSandboxError(
-        `rootDir must be an absolute path, got: ${rawRoot}`,
+        `rootDir '${this.#rootDir}' must be equal to or under runtimeWorkDir '${this.#runtimeWorkDir}' — the sandbox runtime image refuses to serve files outside its working directory`,
         "INVALID_ARGUMENT",
       );
     }
-    this.#rootDir = rawRoot === "/" ? "/" : rawRoot.replace(/\/+$/, "");
 
     const serverPort = options.connectionConfig.serverPort ?? 8888;
     const strategy = createConnectionStrategy(
@@ -139,7 +171,34 @@ export class K8sAgentSandbox extends BaseSandbox {
   // -----------------------------------------------------------------------
 
   /**
-   * Resolve a caller-supplied path against `rootDir`.
+   * Normalize a caller-supplied absolute path option (`rootDir` /
+   * `runtimeWorkDir`) for storage in the field.
+   *
+   * Steps: must start with `/`, run through `posix.normalize` (which
+   * collapses `..`, `.`, and `//` segments), then strip the trailing
+   * slash unless the result is `/` itself. Throws `INVALID_ARGUMENT`
+   * for empty input or non-absolute paths.
+   */
+  static #normalizeAbsolutePath(value: string, optionName: string): string {
+    if (value === "") {
+      throw new K8sAgentSandboxError(
+        `${optionName} must be a non-empty absolute path`,
+        "INVALID_ARGUMENT",
+      );
+    }
+    if (!value.startsWith("/")) {
+      throw new K8sAgentSandboxError(
+        `${optionName} must be an absolute path, got: ${value}`,
+        "INVALID_ARGUMENT",
+      );
+    }
+    const normalized = posix.normalize(value);
+    return normalized === "/" ? "/" : normalized.replace(/\/+$/, "");
+  }
+
+  /**
+   * Resolve a caller-supplied path against `rootDir`, normalize away
+   * any `..` segments, and reject the result if it escapes `rootDir`.
    *
    * Both `uploadFiles` and `downloadFiles` go through this so the
    * round-trip is symmetric: anything an LLM uploads to `/etc/x` ends
@@ -148,44 +207,101 @@ export class K8sAgentSandbox extends BaseSandbox {
    * the literal `/etc/x` while the download would resolve under
    * `rootDir` and silently miss the file the agent just wrote.
    *
-   * Three cases:
+   * Three input cases:
    * 1. Path already under `rootDir` (e.g. `/app/foo` when rootDir is
-   *    `/app`) — returned unchanged so the most common LLM input
+   *    `/app`) — kept as-is so the most common LLM input
    *    `<rootDir>/<file>` doesn't double-prefix to `/app/app/<file>`.
    * 2. Other absolute path (e.g. `/etc/foo`) — virtualized as
    *    `<rootDir>/etc/foo`. The user's "/" is treated as a virtual
    *    root that maps to rootDir, like a chroot.
    * 3. Relative path (e.g. `foo`) — resolved against `rootDir`
    *    directly.
+   *
+   * After resolution, the path is normalized (collapsing any `..`
+   * segments) and verified to still be under `rootDir`. Without this
+   * normalization step, an LLM input like `"../etc/passwd"` would
+   * yield `/app/../etc/passwd` which the shell resolves to
+   * `/etc/passwd` — escaping the chroot the docstring promises and
+   * defeating the entire point of virtualization.
    */
   #toAbsolutePath(filePath: string): string {
-    // Case 1: already under rootDir.
-    if (filePath === this.#rootDir) return filePath;
-    if (this.#rootDir !== "/" && filePath.startsWith(this.#rootDir + "/")) {
-      return filePath;
+    if (filePath === "") {
+      throw new K8sAgentSandboxError(
+        "filePath must not be empty",
+        "INVALID_ARGUMENT",
+      );
     }
-    // Case 2: absolute path NOT under rootDir.
-    if (filePath.startsWith("/")) {
-      return this.#rootDir === "/"
-        ? filePath
-        : `${this.#rootDir}${filePath}`;
+
+    let resolved: string;
+    if (filePath === this.#rootDir) {
+      resolved = filePath;
+    } else if (
+      this.#rootDir !== "/" &&
+      filePath.startsWith(this.#rootDir + "/")
+    ) {
+      // Already under rootDir.
+      resolved = filePath;
+    } else if (filePath.startsWith("/")) {
+      // Absolute path NOT under rootDir — virtualize.
+      resolved =
+        this.#rootDir === "/" ? filePath : `${this.#rootDir}${filePath}`;
+    } else {
+      // Relative path.
+      resolved =
+        this.#rootDir === "/"
+          ? `/${filePath}`
+          : `${this.#rootDir}/${filePath}`;
     }
-    // Case 3: relative path.
-    return this.#rootDir === "/"
-      ? `/${filePath}`
-      : `${this.#rootDir}/${filePath}`;
+
+    // Normalize away `.` and `..` segments. posix.normalize("/app/../etc")
+    // yields "/etc", which is then caught by the prefix check below.
+    const normalized = posix.normalize(resolved);
+
+    // Verify the normalized result is still under rootDir. Without
+    // this check, `..` segments could escape the virtual root and
+    // hit arbitrary paths on the sandbox filesystem.
+    const isUnderRoot =
+      normalized === this.#rootDir ||
+      (this.#rootDir === "/"
+        ? normalized.startsWith("/")
+        : normalized.startsWith(this.#rootDir + "/"));
+    if (!isUnderRoot) {
+      throw new K8sAgentSandboxError(
+        `path '${filePath}' escapes virtual root '${this.#rootDir}' after normalization (resolved to '${normalized}')`,
+        "INVALID_ARGUMENT",
+      );
+    }
+    return normalized;
   }
 
   /**
-   * Convert an absolute sandbox path to the relative form the
-   * sandbox-router's `/download/{path}` endpoint expects (relative
-   * to the runtime's working directory `/app`).
+   * Convert a virtualized absolute path back to the form the
+   * sandbox-router's `/download/{path}` endpoint expects (relative to
+   * the runtime image's working directory).
+   *
+   * Because the constructor enforces `rootDir` is equal-to or under
+   * `runtimeWorkDir`, every absolute path produced by `#toAbsolutePath`
+   * is guaranteed to be under `runtimeWorkDir`. Stripping the prefix
+   * is therefore always safe — no need for `posix.relative` or `..`
+   * segments (which the runtime's path sanitizer rejects with 403).
    */
   #toRouterDownloadPath(absolutePath: string): string {
-    if (absolutePath.startsWith("/app/")) return absolutePath.slice(5);
-    if (absolutePath === "/app") return "";
-    if (absolutePath.startsWith("/")) return absolutePath.slice(1);
-    return absolutePath;
+    if (absolutePath === this.#runtimeWorkDir) return "";
+    if (this.#runtimeWorkDir === "/") {
+      return absolutePath.slice(1);
+    }
+    // The constructor's rootDir-under-runtimeWorkDir check guarantees
+    // this prefix relationship for any path #toAbsolutePath produces.
+    // The defensive `else` exists only to satisfy the type checker;
+    // hitting it means the constructor validation was bypassed or
+    // someone called this with an arbitrary path.
+    if (absolutePath.startsWith(this.#runtimeWorkDir + "/")) {
+      return absolutePath.slice(this.#runtimeWorkDir.length + 1);
+    }
+    throw new K8sAgentSandboxError(
+      `internal error: path '${absolutePath}' is not under runtimeWorkDir '${this.#runtimeWorkDir}'`,
+      "INVALID_ARGUMENT",
+    );
   }
 
   /**
@@ -378,35 +494,119 @@ export class K8sAgentSandbox extends BaseSandbox {
       files.map(([path, content]) => uploadOne(path, content)),
     );
 
-    return settled.map((s, i) => {
-      if (s.status === "fulfilled") return s.value;
-      const err = s.reason;
-      // Re-throw transport-level errors (CONNECTION_FAILED,
-      // TUNNEL_FAILED, HTTP_ERROR) and precondition violations
-      // (NOT_INITIALIZED) so the caller sees the actual problem
-      // rather than a fake per-file error response. The previous
-      // version flattened these to `invalid_path`, which sent
-      // agents into a retry loop with a misleading remediation hint.
-      if (err instanceof K8sAgentSandboxError) {
-        if (
-          err.code === "CONNECTION_FAILED" ||
-          err.code === "TUNNEL_FAILED" ||
-          err.code === "HTTP_ERROR" ||
-          err.code === "NOT_INITIALIZED" ||
-          err.code === "COMMAND_TIMEOUT"
-        ) {
-          throw err;
-        }
+    // First pass: build the full response array AND collect any
+    // transport-level / precondition errors. These must surface to
+    // the caller via a typed throw so the partial state is recoverable
+    // and the typed error code is preserved. The previous version
+    // threw from inside `Array.prototype.map` which aborted iteration
+    // mid-way and silently dropped fulfilled responses for files
+    // that DID upload successfully — the state on the server was
+    // real, only the caller's record was lost.
+    const responses: FileUploadResponse[] = [];
+    const transportErrors: K8sAgentSandboxError[] = [];
+    settled.forEach((s, i) => {
+      if (s.status === "fulfilled") {
+        responses.push(s.value);
+        return;
       }
-      // Genuinely unknown error path: log so an operator can diagnose.
-      // FileOperationError doesn't have a generic "unknown" so we
-      // fall back to `invalid_path` (least misleading — doesn't
-      // suggest a privilege escalation retry).
+      const err = s.reason;
+      if (
+        err instanceof K8sAgentSandboxError &&
+        K8sAgentSandbox.#isBatchFatalCode(err.code)
+      ) {
+        transportErrors.push(err);
+        // Record a per-file failure entry so the response array
+        // indices match the input. Use `invalid_path` as the
+        // least-misleading FileOperationError fallback — the typed
+        // error thrown below carries the real cause.
+        responses.push({
+          path: files[i]![0],
+          error: "invalid_path" as FileOperationError,
+        });
+        return;
+      }
+      // Genuinely unknown error path: log so an operator can
+      // diagnose, then fall back to `invalid_path`.
       console.warn(
         `uploadFiles: unexpected error for '${files[i]![0]}': ${err instanceof Error ? err.message : String(err)}`,
       );
-      return { path: files[i]![0], error: "invalid_path" as FileOperationError };
+      responses.push({
+        path: files[i]![0],
+        error: "invalid_path" as FileOperationError,
+      });
     });
+
+    if (transportErrors.length > 0) {
+      throw K8sAgentSandbox.#buildBatchError(
+        "uploadFiles",
+        files.length,
+        transportErrors,
+        responses,
+      );
+    }
+
+    return responses;
+  }
+
+  /**
+   * Codes that abort an entire batch (transport / precondition)
+   * rather than producing a per-file error response. These must be
+   * surfaced via a thrown `K8sBatchOperationError`, not flattened
+   * into the per-file `FileOperationError` enum:
+   *
+   * - Transport errors (`CONNECTION_FAILED`, `TUNNEL_FAILED`,
+   *   `HTTP_ERROR`) abort because the network/router is broken; no
+   *   point continuing the batch.
+   * - `NOT_INITIALIZED` is a precondition violation that affects
+   *   every file in the batch identically.
+   * - `COMMAND_TIMEOUT` was set per-batch (the per-call timeout
+   *   default), so all subsequent files would hit it too.
+   * - `INVALID_ARGUMENT` is a security boundary (path traversal,
+   *   empty path) — must be visible to the caller, NOT degraded to
+   *   a per-file `invalid_path` response that an LLM could ignore.
+   */
+  static #isBatchFatalCode(code: string): boolean {
+    return (
+      code === "CONNECTION_FAILED" ||
+      code === "TUNNEL_FAILED" ||
+      code === "HTTP_ERROR" ||
+      code === "NOT_INITIALIZED" ||
+      code === "COMMAND_TIMEOUT" ||
+      code === "INVALID_ARGUMENT"
+    );
+  }
+
+  /**
+   * Build a typed `K8sBatchOperationError` from collected transport
+   * errors plus the per-file response array. Used by both
+   * `uploadFiles` and `downloadFiles` so the partial-results
+   * preservation contract is identical for both.
+   *
+   * If multiple transport errors are present, all of them are kept
+   * in `transportErrors` so callers can inspect sibling failure modes
+   * (the previous version only kept the first, silently dropping
+   * mixed-code failures). The first error's code becomes the
+   * batch-level code so caller branching on `err.code` still works
+   * for the homogeneous case.
+   */
+  static #buildBatchError<T>(
+    operation: string,
+    totalFiles: number,
+    transportErrors: K8sAgentSandboxError[],
+    partialResults: T[],
+  ): K8sBatchOperationError<T> {
+    const primary = transportErrors[0]!;
+    return new K8sBatchOperationError<T>(
+      `${operation}: ${transportErrors.length}/${totalFiles} files hit fatal errors: ${primary.message}` +
+        (transportErrors.length > 1
+          ? ` (and ${transportErrors.length - 1} other error(s); see .transportErrors)`
+          : ""),
+      primary.code,
+      partialResults,
+      transportErrors,
+      primary,
+      primary.httpStatus,
+    );
   }
 
   /**
@@ -431,24 +631,32 @@ export class K8sAgentSandbox extends BaseSandbox {
       paths.map((p) => downloadOne(p)),
     );
 
-    return settled.map((s, i) => {
-      if (s.status === "fulfilled") return s.value;
+    // Build the full response array AND collect batch-fatal errors
+    // separately. Same partial-success-preservation pattern as
+    // uploadFiles — see the comment there for the rationale.
+    const responses: FileDownloadResponse[] = [];
+    const transportErrors: K8sAgentSandboxError[] = [];
+    settled.forEach((s, i) => {
+      if (s.status === "fulfilled") {
+        responses.push(s.value);
+        return;
+      }
       const err = s.reason;
       if (err instanceof K8sAgentSandboxError) {
-        // Re-throw transport-level errors so the caller sees the
-        // real problem instead of a per-file `file_not_found`.
-        if (
-          err.code === "CONNECTION_FAILED" ||
-          err.code === "TUNNEL_FAILED" ||
-          err.code === "HTTP_ERROR" ||
-          err.code === "NOT_INITIALIZED"
-        ) {
-          throw err;
+        if (K8sAgentSandbox.#isBatchFatalCode(err.code)) {
+          transportErrors.push(err);
+          responses.push({
+            path: paths[i]!,
+            content: null,
+            error: "file_not_found",
+          });
+          return;
         }
-        // Use the typed httpStatus instead of string-matching the
-        // message. The previous `err.message.includes("Access denied")`
-        // check was one rename away from silently degrading every 403
-        // to `file_not_found`.
+        // Per-file errors: use the typed httpStatus instead of
+        // string-matching the message. The previous
+        // `err.message.includes("Access denied")` check was one
+        // rename away from silently degrading every 403 to
+        // `file_not_found`.
         let error: FileOperationError;
         if (err.httpStatus === 403) {
           error = "permission_denied";
@@ -464,16 +672,31 @@ export class K8sAgentSandbox extends BaseSandbox {
           );
           error = "file_not_found";
         }
-        return { path: paths[i]!, content: null, error };
+        responses.push({ path: paths[i]!, content: null, error });
+        return;
       }
       // Non-K8sAgentSandboxError rejection — preserve as a generic
-      // failure rather than re-throwing (re-throwing would drop the
-      // partial successes from the rest of the batch).
+      // failure entry.
       console.warn(
         `downloadFiles: unexpected error for '${paths[i]}': ${err instanceof Error ? err.message : String(err)}`,
       );
-      return { path: paths[i]!, content: null, error: "file_not_found" };
+      responses.push({
+        path: paths[i]!,
+        content: null,
+        error: "file_not_found",
+      });
     });
+
+    if (transportErrors.length > 0) {
+      throw K8sAgentSandbox.#buildBatchError(
+        "downloadFiles",
+        paths.length,
+        transportErrors,
+        responses,
+      );
+    }
+
+    return responses;
   }
 
   // -----------------------------------------------------------------------
@@ -536,12 +759,20 @@ export class K8sAgentSandbox extends BaseSandbox {
     }
 
     if (errors.length > 0) {
-      // Single-error case is more ergonomic as the original error.
+      // Single-error case: re-throw the original error directly when
+      // it's already a typed K8sAgentSandboxError so the caller can
+      // branch on err.code (e.g. TUNNEL_FAILED). The previous version
+      // wrapped EVERYTHING as K8S_API_ERROR which threw away the
+      // original code and broke caller-side error type matching.
       if (errors.length === 1) {
+        const only = errors[0]!;
+        if (only instanceof K8sAgentSandboxError) {
+          throw only;
+        }
         throw new K8sAgentSandboxError(
-          `K8sAgentSandbox.close failed: ${errors[0]!.message}`,
+          `K8sAgentSandbox.close failed: ${only.message}`,
           "K8S_API_ERROR",
-          errors[0],
+          only,
         );
       }
       throw new AggregateError(
@@ -580,6 +811,7 @@ export class K8sAgentSandbox extends BaseSandbox {
       serverPort?: number;
       defaultTimeout?: number;
       rootDir?: string;
+      runtimeWorkDir?: string;
     },
   ): K8sAgentSandbox {
     return new K8sAgentSandbox({
@@ -592,6 +824,7 @@ export class K8sAgentSandbox extends BaseSandbox {
       namespace: options?.namespace,
       defaultTimeout: options?.defaultTimeout,
       rootDir: options?.rootDir,
+      runtimeWorkDir: options?.runtimeWorkDir,
     });
   }
 
@@ -641,6 +874,7 @@ export class K8sAgentSandbox extends BaseSandbox {
           deleteOnClose,
           claimName,
           rootDir: options.rootDir,
+          runtimeWorkDir: options.runtimeWorkDir,
         },
         k8sClient,
       );
@@ -673,46 +907,58 @@ export class K8sAgentSandbox extends BaseSandbox {
 
       return sandbox;
     } catch (err) {
-      // Tear down the sandbox first if one was constructed — this
-      // shuts down the tunnel subprocess AND deletes the claim when
-      // deleteOnClose is true. We pass throwOnError:false because
-      // surfacing a cleanup error during a creation-failure unwind
-      // would mask the original creation error, which is almost
-      // always more useful for debugging than the secondary teardown
-      // failure. Cleanup errors are still logged via console.warn
-      // by close() in non-throwing mode.
-      let claimCleanedUp = false;
+      // Two-stage cleanup, both gated on `deleteOnClose`:
+      //
+      // 1. If a sandbox was constructed, call its `close()` to tear
+      //    down the tunnel subprocess (preventing kubectl-port-forward
+      //    leaks). With deleteOnClose=true, close() also attempts to
+      //    delete the claim. We pass throwOnError:false because
+      //    surfacing a cleanup error during a creation-failure unwind
+      //    would mask the original creation error.
+      //
+      // 2. If `deleteOnClose` is true AND we want belt-and-braces
+      //    safety (close() may have swallowed a transient delete
+      //    failure inside its own try/catch), explicitly call
+      //    `deleteSandboxClaim` as a fallback. This recovers from
+      //    transient delete failures during close() — the cost is
+      //    one 404 on the happy path, which deleteSandboxClaim
+      //    silently absorbs.
+      //
+      // When `deleteOnClose=false` the user explicitly opted into
+      // keeping the claim around (typically for debugging), so we
+      // do NOT delete it on creation failure. The previous version
+      // unconditionally ran the explicit delete, which violated this
+      // opt-in.
       if (sandbox !== null) {
         try {
           await sandbox.close({ throwOnError: false });
-          // sandbox.close() with deleteOnClose=true already deleted
-          // the claim, so the outer cleanup below would be redundant.
-          claimCleanedUp = deleteOnClose;
         } catch {
-          // close() should not throw with throwOnError:false but be
-          // defensive — fall through to the explicit claim cleanup.
+          // close() with throwOnError:false should not throw, but
+          // fall through regardless.
         }
       }
-      // Outer claim cleanup: only runs when sandbox.close() did NOT
-      // already delete the claim (i.e. sandbox was never constructed,
-      // OR deleteOnClose was disabled). The previous version had this
-      // condition inverted as `if (sandbox === null)` AFTER the
-      // unconditional cleanup, which meant the warn branch was
-      // unreachable on the only path that needed it (sandbox
-      // constructed but claim wasn't auto-deleted).
-      if (!claimCleanedUp) {
+      if (deleteOnClose) {
         try {
           await k8sClient.deleteSandboxClaim(claimName, namespace);
         } catch (cleanupErr) {
-          // 404 is silently ignored inside deleteSandboxClaim — if
-          // we get here it's a non-404 failure that the operator
-          // needs to know about so they can clean up manually.
+          // 404 is silently ignored inside deleteSandboxClaim, so
+          // any exception here means the K8s API rejected a non-404
+          // delete (transient unavailability, RBAC, etc.). Log
+          // loudly so the operator can clean up manually before the
+          // claim accrues billing or pod resources.
           console.warn(
             `Failed to clean up SandboxClaim '${claimName}' after creation failure: ` +
               `${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}. ` +
               `Manual cleanup: kubectl delete sandboxclaim ${claimName} -n ${namespace}`,
           );
         }
+      } else {
+        // deleteOnClose=false — log the leftover claim so the user
+        // knows where to find it.
+        console.warn(
+          `Sandbox creation failed; SandboxClaim '${claimName}' was left in namespace '${namespace}' ` +
+            `because deleteOnClose=false. Manual cleanup: kubectl delete sandboxclaim ${claimName} -n ${namespace}`,
+        );
       }
       if (err instanceof K8sAgentSandboxError) throw err;
       throw new K8sAgentSandboxError(
@@ -735,6 +981,7 @@ export class K8sAgentSandbox extends BaseSandbox {
       deleteOnClose?: boolean;
       resolveTimeout?: number;
       rootDir?: string;
+      runtimeWorkDir?: string;
     },
   ): Promise<K8sAgentSandbox> {
     const namespace = options?.namespace ?? "default";
@@ -760,6 +1007,7 @@ export class K8sAgentSandbox extends BaseSandbox {
         deleteOnClose: options?.deleteOnClose,
         claimName,
         rootDir: options?.rootDir,
+        runtimeWorkDir: options?.runtimeWorkDir,
       },
       k8sClient,
     );

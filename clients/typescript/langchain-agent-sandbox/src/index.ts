@@ -81,4 +81,4 @@ export type {
   HealthzResult,
 } from "./types.js";
 
-export { K8sAgentSandboxError } from "./types.js";
+export { K8sAgentSandboxError, K8sBatchOperationError } from "./types.js";
