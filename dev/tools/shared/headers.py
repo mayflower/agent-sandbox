@@ -55,13 +55,20 @@ COMMENT_STYLES = {
     ".html": (None, "<!--", "-->"),
 }
 
-# Default glob patterns to exclude, relative to the root directory
+# Default glob patterns to exclude. The matcher in `is_path_excluded`
+# treats any pattern containing a `/` as matching from the repo root,
+# so directory excludes that should apply at *any* depth must start
+# with `**/`. Without this prefix a pattern like `node_modules/**`
+# only matches a top-level `node_modules/`, NOT a nested
+# `clients/foo/node_modules/` — and `fix-boilerplate` ends up walking
+# into nested third-party dirs and stamping Apache 2.0 headers onto
+# files it must not modify (corrupting CJS modules in the process).
 DEFAULT_EXCLUDES = [
     ".git/**",
     ".idea/**",
-    "__pycache__/**",
-    "node_modules/**",
-    "vendor/**",
+    "**/__pycache__/**",
+    "**/node_modules/**",
+    "**/vendor/**",
     "**/*.yaml",
     "**/*.yml",
     "**/LICENSE",
