@@ -50,6 +50,12 @@ PYTHON_TEST_SUITES = [
             (os.path.join("examples", "agent-sandbox-rl"), "[test]"),
         ],
     },
+    {
+        "name": "langchain-agent-sandbox",
+        "dir": os.path.join("clients", "python", "langchain-agent-sandbox", "tests"),
+        "package_dir": os.path.join("clients", "python", "langchain-agent-sandbox"),
+        "requirements": None,
+    },
 ]
 
 
@@ -110,11 +116,20 @@ def run_python_tests(repo_root):
         elif req_file and os.path.isfile(req_file):
             subprocess.check_call(
                 [venv_pip, "install", "--quiet", "-r", req_file], env=env)
+        elif suite.get("package_dir"):
+            # install local dependencies first (e.g., k8s-agent-sandbox for langchain)
+            sdk_path = os.path.join(repo_root, "clients", "python", "agentic-sandbox-client")
+            subprocess.check_call(
+                [venv_pip, "install", "--quiet", "-e", sdk_path], env=env)
+            # install the package with test extras from its pyproject.toml
+            package_dir = os.path.join(repo_root, suite["package_dir"])
+            subprocess.check_call(
+                [venv_pip, "install", "--quiet", "-e", ".[test]"], cwd=package_dir, env=env)
         elif suite["name"] == "k8s-agent-sandbox":
             # install the package itself with test extras
             package_dir = os.path.dirname(test_dir)
             subprocess.check_call(
-            [venv_pip, "install", "--quiet", "-e", ".[test]"], cwd=package_dir, env=env)
+                [venv_pip, "install", "--quiet", "-e", ".[test]"], cwd=package_dir, env=env)
 
             # Workaround: kubernetes 36.0.0 incorrectly bundles kubernetes_asyncio
             # files in its wheel, which overwrite the real kubernetes_asyncio package.
