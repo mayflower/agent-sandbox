@@ -1,0 +1,14 @@
+src/
+tests/
+node_modules/
+coverage/
+.tsdown/
+*.tsbuildinfo
+*.test.ts
+*.int.test.ts
+tsconfig.json
+tsdown.config.ts
+vitest.config.ts
+.env
+.env.local
+.gitignore

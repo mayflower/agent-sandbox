@@ -129,6 +129,10 @@ To interact with the agent-sandbox programmatically, you can use the Python SDK.
 
 For detailed installation and usage instructions, please refer to the [Python SDK README](clients/python/agentic-sandbox-client/README.md).
 
+### TypeScript backend for deepagents-js
+
+A TypeScript backend that implements the [deepagents-js](https://github.com/langchain-ai/deepagentsjs) `SandboxBackendProtocol` against the agent-sandbox controller is available at [`clients/typescript/langchain-agent-sandbox`](clients/typescript/langchain-agent-sandbox/README.md). It provides direct, gateway, and `kubectl port-forward` connection modes and is the JS counterpart to the Python `langchain-agent-sandbox` package.
+
 ## Configuration
 
 For advanced scale and concurrency tuning (e.g., API QPS and worker counts), please see the [Configuration Guide](docs/configuration.md).

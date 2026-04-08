@@ -78,6 +78,10 @@ test-e2e-race:
 test-e2e-benchmarks:
 	./dev/ci/presubmits/test-e2e --suite benchmarks
 
+.PHONY: test-langchainjs
+test-langchainjs:
+	cd clients/typescript/langchain-agent-sandbox && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
+
 .PHONY: lint-go
 lint-go:
 	./dev/tools/lint-go

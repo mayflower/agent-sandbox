@@ -15,6 +15,7 @@
 
 import os
 import argparse
+import shutil
 import subprocess
 import sys
 
@@ -147,6 +148,86 @@ def run_python_e2e_tests(repo_root, artifact_dir, env):
     return result.returncode
 
 
+def setup_typescript_sdk(repo_root, env):
+    """Installs the TypeScript langchain-agent-sandbox package if pnpm is present.
+
+    The TS package is optional in CI environments that don't have Node tooling
+    installed. When pnpm or the package directory is missing, we skip silently
+    so the rest of the e2e suite still runs.
+
+    Distinguishes two failure modes:
+      1. Precondition missing (no pnpm, no package dir) -> skip with warning,
+         return True so the rest of the e2e suite continues.
+      2. `pnpm install --frozen-lockfile` actually FAILS despite pnpm being
+         present -> hard fail, return False. Previously this path silently
+         returned True, which meant a stale node_modules/ left behind by an
+         earlier run would be reused by the test execution, and the suite
+         would run against out-of-sync dependencies without any signal.
+    """
+    ts_path = os.path.join(repo_root, "clients", "typescript", "langchain-agent-sandbox")
+    if not os.path.isdir(ts_path):
+        print("langchain-agent-sandbox (TypeScript) not present, skipping TS e2e setup.")
+        return True
+    if shutil.which("pnpm") is None:
+        print("WARNING: pnpm not found on PATH, TypeScript e2e tests will be skipped.")
+        return True
+
+    print("========= Ensuring langchain-agent-sandbox (TypeScript) is installed... =========")
+    install_cmd = ["pnpm", "install", "--frozen-lockfile"]
+    print(f"Running command: {' '.join(install_cmd)} (cwd={ts_path})")
+    result = subprocess.run(install_cmd, env=env, cwd=ts_path, check=False)
+    if result.returncode != 0:
+        print(
+            "ERROR: `pnpm install --frozen-lockfile` failed in "
+            f"{ts_path}. Refusing to run TypeScript e2e tests against a "
+            "potentially stale node_modules/. Fix the lockfile "
+            "(pnpm install) and re-run."
+        )
+        return False
+    print("langchain-agent-sandbox (TypeScript) installed successfully.")
+    return True
+
+
+def run_typescript_e2e_tests(repo_root, artifact_dir, env):
+    """Runs the TypeScript e2e tests and generates a junit report.
+
+    Skipped if the TS package is not present, pnpm is unavailable, or the
+    LANGCHAIN_SANDBOX_TEMPLATE env var is not set. The int test file
+    itself also skips when the template is missing, but we short-circuit
+    here to avoid spending ~2s on vitest startup for an empty run.
+    """
+    ts_path = os.path.join(repo_root, "clients", "typescript", "langchain-agent-sandbox")
+    if not os.path.isdir(ts_path) or shutil.which("pnpm") is None:
+        return 0
+    if not env.get("LANGCHAIN_SANDBOX_TEMPLATE") and not env.get("SANDBOX_TEMPLATE"):
+        print(
+            "Skipping TypeScript e2e tests: LANGCHAIN_SANDBOX_TEMPLATE "
+            "(or legacy SANDBOX_TEMPLATE) is not set."
+        )
+        return 0
+
+    print("========= Running langchain-agent-sandbox (TypeScript) E2E tests... =========")
+    junit_report_path = f"{repo_root}/bin/e2e-typescript-junit.xml"
+
+    test_env = env.copy()
+    # Point @kubernetes/client-node at the kind cluster's kubeconfig.
+    test_env["KUBECONFIG"] = os.path.join(repo_root, "bin", "KUBECONFIG")
+
+    vitest_cmd = [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "--mode",
+        "int",
+        "--reporter=junit",
+        f"--outputFile={junit_report_path}",
+    ]
+    print(f"Running command: {' '.join(vitest_cmd)} (cwd={ts_path})")
+    result = subprocess.run(vitest_cmd, env=test_env, cwd=ts_path)
+    return result.returncode
+
+
 def main(args):
     """ invokes unit tests and outputs a junit results file """
     repo_root = utils.get_repo_root()
@@ -165,16 +246,21 @@ def main(args):
     if not setup_python_sdk(repo_root, env):
         return 1
 
+    if not setup_typescript_sdk(repo_root, env):
+        return 1
+
     exit_code = 0
 
     go_test_result = 0
     go_benchmark_result = 0
     python_test_result = 0
+    typescript_test_result = 0
 
     if args.suite in ["all", "tests"]:
         go_test_result = run_go_e2e_tests(repo_root, artifact_dir, env)
         python_test_result = run_python_e2e_tests(repo_root, artifact_dir, env)
-        
+        typescript_test_result = run_typescript_e2e_tests(repo_root, artifact_dir, env)
+
     if args.suite in ["all", "benchmarks"]:
         go_benchmark_result = run_go_e2e_benchmarks(repo_root, artifact_dir, env)
 
@@ -188,7 +274,16 @@ def main(args):
         print("Python SDK E2E tests failed.")
         exit_code = 1
 
-    if go_test_result != 0 or python_test_result != 0 or go_benchmark_result != 0:
+    if typescript_test_result != 0:
+        print("TypeScript SDK E2E tests failed.")
+        exit_code = 1
+
+    if (
+        go_test_result != 0
+        or python_test_result != 0
+        or typescript_test_result != 0
+        or go_benchmark_result != 0
+    ):
         print("One or more E2E tests failed.")
         exit_code = 1
 
