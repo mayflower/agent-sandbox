@@ -233,18 +233,65 @@ def test_grep_returns_matches():
     _require(matches[0]["text"] == "def foo():", f"Unexpected text: {matches[0]['text']}")
 
 
-def test_grep_error_returns_message():
-    """grep exit code >= 2 indicates an actual error (not just no-match)."""
+def test_grep_error_uses_stderr_for_message():
+    """grep exit code >= 2 should surface stderr content in the error message.
+
+    Since the grep command no longer uses `2>&1` (the sandbox runtime
+    doesn't go through a shell, so that redirect became a literal
+    filename arg to grep), the real error text lives on the stderr
+    channel. The error message must read from stderr, not stdout.
+    """
     client = StubSandbox(
-        run_result=SimpleNamespace(stdout="grep: /app/nonexistent: No such file or directory", stderr="", exit_code=2)
+        run_result=SimpleNamespace(
+            stdout="",
+            stderr="grep: /app/nonexistent: No such file or directory",
+            exit_code=2,
+        )
     )
     backend = AgentSandboxBackend(client)
 
     result = backend.grep("pattern", path="/nonexistent")
 
     _require(result.error is not None, "Expected error")
-    _require("grep failed" in result.error, f"Unexpected error message: {result.error}")
+    _require("grep failed" in result.error, f"Unexpected error message prefix: {result.error}")
+    _require(
+        "No such file or directory" in result.error,
+        f"Expected stderr text in error message, got: {result.error!r}",
+    )
     _require(result.matches == [], "Expected empty matches alongside error")
+
+
+def test_grep_error_falls_back_to_stdout_when_stderr_empty():
+    """If stderr is empty for some reason, fall back to stdout content."""
+    client = StubSandbox(
+        run_result=SimpleNamespace(
+            stdout="legacy-error-on-stdout",
+            stderr="",
+            exit_code=2,
+        )
+    )
+    backend = AgentSandboxBackend(client)
+
+    result = backend.grep("pattern", path="/nonexistent")
+
+    _require(result.error is not None, "Expected error")
+    _require(
+        "legacy-error-on-stdout" in result.error,
+        f"Expected stdout fallback, got: {result.error!r}",
+    )
+
+
+def test_grep_error_reports_exit_code_when_both_streams_empty():
+    """With both streams empty, surface the exit code instead of 'unknown'."""
+    client = StubSandbox(
+        run_result=SimpleNamespace(stdout="", stderr="", exit_code=3)
+    )
+    backend = AgentSandboxBackend(client)
+
+    result = backend.grep("pattern", path="/nonexistent")
+
+    _require(result.error is not None, "Expected error")
+    _require("exit code 3" in result.error, f"Expected exit code in error, got: {result.error!r}")
 
 
 def test_glob_returns_matching_files():
@@ -301,6 +348,132 @@ def test_glob_prefix_double_star_pattern():
         paths == ["/src/a.ts", "/src/dir/b.ts", "/src/dir/nested/c.ts"],
         f"Unexpected matches: {paths}",
     )
+
+
+# --- Direct unit tests for _compile_glob -----------------------------------
+#
+# The regex translation layer has ~8 distinct code paths (basename
+# fallback, leading/middle/trailing `**`, collapsed `**`, character
+# class, `?` wildcard, literal escape). These tests exercise it at
+# the helper level so a regression in the translator is caught before
+# it slips into backend.glob() and ships as a silent empty-matches
+# bug like the pre-fix `a/**/b` matching `ab`.
+
+
+def _match(pattern: str, path: str) -> bool:
+    from langchain_agent_sandbox.backend import _compile_glob
+
+    return _compile_glob(pattern)(path)
+
+
+def test_compile_glob_basename_fallback_no_slash():
+    """Patterns with no `/` match against the basename, at any depth."""
+    assert _match("*.py", "main.py") is True
+    assert _match("*.py", "nested/main.py") is True
+    assert _match("*.py", "main.txt") is False
+
+
+def test_compile_glob_question_mark_wildcard():
+    """`?` matches exactly one character and does not cross `/`."""
+    assert _match("file?.txt", "file1.txt") is True
+    assert _match("file?.txt", "fileA.txt") is True
+    assert _match("file?.txt", "file12.txt") is False
+    assert _match("src/file?.txt", "src/file1.txt") is True
+    assert _match("src/file?.txt", "src/file/txt") is False
+
+
+def test_compile_glob_character_class():
+    """`[abc]` matches one of the listed characters."""
+    assert _match("[abc].txt", "a.txt") is True
+    assert _match("[abc].txt", "b.txt") is True
+    assert _match("[abc].txt", "d.txt") is False
+
+
+def test_compile_glob_unterminated_character_class_is_literal():
+    """`[` without a closing `]` is treated as a literal `[`."""
+    # The translator escapes the `[` when there's no closing bracket
+    # rather than producing an invalid regex. A file literally named
+    # `file[abc.py` should then match the pattern.
+    assert _match("src/file[abc.py", "src/file[abc.py") is True
+    assert _match("src/file[abc.py", "src/filea.py") is False
+
+
+def test_compile_glob_leading_double_star():
+    """`**/X` matches X at any depth including root."""
+    assert _match("**/x", "x") is True
+    assert _match("**/x", "a/x") is True
+    assert _match("**/x", "a/b/x") is True
+    assert _match("**/x", "ax") is False
+
+
+def test_compile_glob_middle_double_star_requires_adjoining_slashes():
+    """Critical: `a/**/b` must NOT match `ab`.
+
+    Regression test for the fix where the middle-`**` translation
+    previously compiled `a/**/b` to `^a(?:.*/)?b$`, which matched
+    `"ab"` because `(?:.*/)?` can match the empty string and collapse
+    the two literal slashes away. The correct regex is
+    `^a/(?:[^/]+/)*b$`, requiring at least `a/b`.
+    """
+    assert _match("a/**/b", "ab") is False  # the bug
+    assert _match("a/**/b", "a/b") is True
+    assert _match("a/**/b", "a/x/b") is True
+    assert _match("a/**/b", "a/x/y/b") is True
+    assert _match("a/**/b", "a/b/c") is False
+    assert _match("a/**/b", "x/a/b") is False
+
+
+def test_compile_glob_trailing_double_star():
+    """`a/**` matches things inside `a/`, not bare `a`."""
+    assert _match("a/**", "a") is False  # gitignore semantic
+    assert _match("a/**", "a/b") is True
+    assert _match("a/**", "a/b/c") is True
+    assert _match("a/**", "ab") is False
+
+
+def test_compile_glob_multiple_double_stars():
+    """`a/**/b/**/c` matches c after b after a at any depth."""
+    assert _match("a/**/b/**/c", "a/b/c") is True
+    assert _match("a/**/b/**/c", "a/x/b/c") is True
+    assert _match("a/**/b/**/c", "a/b/x/c") is True
+    assert _match("a/**/b/**/c", "a/x/y/b/z/c") is True
+    assert _match("a/**/b/**/c", "a/c") is False
+    assert _match("a/**/b/**/c", "abc") is False
+
+
+def test_compile_glob_consecutive_double_stars_collapse():
+    """`**/**` is semantically identical to a single `**`."""
+    assert _match("**/**/x", "x") is True
+    assert _match("**/**/x", "a/x") is True
+    assert _match("**/**/x", "a/b/x") is True
+
+
+def test_compile_glob_standalone_double_star_matches_everything():
+    """A pattern of just `**` matches any path."""
+    assert _match("**", "anything") is True
+    assert _match("**", "a/b/c") is True
+    assert _match("**", "") is True
+
+
+def test_glob_returns_typed_error_for_malformed_pattern():
+    """An invalid regex character class should yield GlobResult(error=...), not raise."""
+    # Pattern contains a reverse character range (`z-a`) which the
+    # regex engine rejects with re.error. _compile_glob passes
+    # character classes through to the engine literally, so this
+    # surfaces as a compilation failure that glob() must catch and
+    # convert to a typed error — otherwise the agent sees a Python
+    # traceback instead of a usable response.
+    client = StubSandbox(run_result=SimpleNamespace(stdout="", stderr="", exit_code=0))
+    backend = AgentSandboxBackend(client)
+
+    result = backend.glob("src/file[z-a].py", path="/")
+
+    _require(result.error is not None, "Expected typed error for malformed pattern")
+    _require(
+        "invalid glob pattern" in result.error,
+        f"Expected helpful error prefix, got: {result.error!r}",
+    )
+    _require(result.matches == [], "Expected empty matches on malformed pattern")
 
 
 def test_glob_returns_error_with_empty_matches_on_failure():
@@ -490,6 +663,296 @@ def test_factory_pattern_passes_kwargs():
         # connection_config should be a GatewayConnectionConfig
         call_kwargs = MockClient.call_args.kwargs
         _require("connection_config" in call_kwargs, "Expected connection_config kwarg")
+
+
+def test_factory_eagerly_provisions_sandbox():
+    """The factory must provision the sandbox before returning.
+
+    Regression test: deepagents calls factory(_runtime) and uses the
+    returned backend directly without `with`. If the factory only
+    returned an un-entered `from_template()` backend, the first call
+    to execute()/ls()/etc. would dereference `self._sandbox` (still
+    None) and raise AttributeError. The factory must call
+    `__enter__()` eagerly.
+    """
+    with patch("langchain_agent_sandbox.backend.SandboxClient") as MockClient:
+        mock_sdk = MagicMock()
+        mock_sandbox = MagicMock()
+        mock_sdk.create_sandbox.return_value = mock_sandbox
+        MockClient.return_value = mock_sdk
+
+        factory = create_sandbox_backend_factory(template_name="t")
+        backend = factory(MagicMock())
+
+        # The sandbox handle must be populated, not None.
+        _require(
+            backend._sandbox is not None,
+            "Factory should eagerly enter the backend (sandbox is still None)",
+        )
+        _require(
+            backend._sandbox is mock_sandbox,
+            f"Expected the sandbox returned by sdk_client.create_sandbox, got {backend._sandbox}",
+        )
+
+        # sdk_client.create_sandbox must have been called once.
+        mock_sdk.create_sandbox.assert_called_once()
+
+
+def test_factory_registers_finalizer_for_cleanup():
+    """The factory must register a finalizer that deletes the sandbox.
+
+    Without this, a factory-provisioned sandbox would leak in the
+    cluster because deepagents never calls `__exit__` on the backend.
+    The finalizer is exposed as `backend._finalizer` so the test can
+    invoke it deterministically rather than relying on `del backend +
+    gc.collect()` GC ordering (which is fragile under MagicMock ref
+    retention and alternative interpreters).
+    """
+    with patch("langchain_agent_sandbox.backend.SandboxClient") as MockClient:
+        mock_sdk = MagicMock()
+        mock_sandbox = MagicMock()
+        mock_sandbox.claim_name = "sandbox-claim-abc123"
+        mock_sandbox.namespace = "default"
+        mock_sdk.create_sandbox.return_value = mock_sandbox
+        MockClient.return_value = mock_sdk
+
+        factory = create_sandbox_backend_factory(template_name="t")
+        backend = factory(MagicMock())
+
+        # Verify the finalizer was registered and is alive.
+        _require(
+            hasattr(backend, "_finalizer"),
+            "Factory did not expose backend._finalizer",
+        )
+        _require(backend._finalizer.alive, "Finalizer should be alive after factory")
+
+        # Trigger cleanup synchronously via the exposed handle.
+        backend._finalizer()
+
+        _require(
+            backend._finalizer.alive is False,
+            "Finalizer should be marked dead after explicit invocation",
+        )
+        mock_sdk.delete_sandbox.assert_called_once_with(
+            claim_name="sandbox-claim-abc123",
+            namespace="default",
+        )
+
+
+def test_factory_finalizer_swallows_delete_errors(recwarn):
+    """Cleanup errors during finalizer execution must not raise.
+
+    Uses the exposed `_finalizer` handle to invoke cleanup deterministically
+    and asserts that no exception escapes. The previous version relied on
+    `del + gc.collect()` and `assert_called_once()` — but unraisable-in-
+    finalizer exceptions become `sys.unraisablehook` calls under CPython,
+    not test failures, so the swallow guarantee was untested. Calling the
+    finalizer directly turns "must not raise" into a real assertion via
+    `pytest.raises(...)` inversion.
+    """
+    with patch("langchain_agent_sandbox.backend.SandboxClient") as MockClient:
+        mock_sdk = MagicMock()
+        mock_sdk.delete_sandbox.side_effect = RuntimeError("API unreachable")
+        mock_sandbox = MagicMock()
+        mock_sandbox.claim_name = "sandbox-claim-xyz789"
+        mock_sandbox.namespace = "default"
+        mock_sdk.create_sandbox.return_value = mock_sandbox
+        MockClient.return_value = mock_sdk
+
+        factory = create_sandbox_backend_factory(template_name="t")
+        backend = factory(MagicMock())
+
+        # Synchronous, deterministic invocation. If the finalizer
+        # raised, this would propagate and fail the test directly —
+        # which is exactly what we want to assert it does NOT do.
+        backend._finalizer()
+
+        # The non-404 RuntimeError should have been logged at ERROR
+        # (not silently swallowed) by `_factory_atexit_cleanup`.
+        mock_sdk.delete_sandbox.assert_called_once()
+
+
+def test_factory_finalizer_silently_swallows_404():
+    """A 404 from delete_sandbox is the redundant-cleanup case and must be silent.
+
+    Pins the contract that the user's explicit `__exit__` already
+    cleaned up the claim, so the finalizer's redundant attempt sees a
+    404 and doesn't log an error. Probes the SDK exception shape used
+    by the kubernetes-client (`status` attr) and the requests-style
+    shape (`response.status_code`).
+    """
+    class _FakeApiException(Exception):
+        def __init__(self, status):
+            super().__init__(f"HTTP {status}")
+            self.status = status
+
+    with patch("langchain_agent_sandbox.backend.SandboxClient") as MockClient:
+        mock_sdk = MagicMock()
+        mock_sdk.delete_sandbox.side_effect = _FakeApiException(404)
+        mock_sandbox = MagicMock()
+        mock_sandbox.claim_name = "sandbox-claim-already-gone"
+        mock_sandbox.namespace = "default"
+        mock_sdk.create_sandbox.return_value = mock_sandbox
+        MockClient.return_value = mock_sdk
+
+        factory = create_sandbox_backend_factory(template_name="t")
+        backend = factory(MagicMock())
+
+        # Must not raise.
+        backend._finalizer()
+        mock_sdk.delete_sandbox.assert_called_once()
+
+
+def test_factory_finalizer_logs_non_404_failures(caplog):
+    """Non-404 delete failures must be logged so the leak is operator-visible."""
+    import logging
+
+    with patch("langchain_agent_sandbox.backend.SandboxClient") as MockClient:
+        mock_sdk = MagicMock()
+        mock_sdk.delete_sandbox.side_effect = RuntimeError("API unreachable")
+        mock_sandbox = MagicMock()
+        mock_sandbox.claim_name = "sandbox-claim-leaked"
+        mock_sandbox.namespace = "default"
+        mock_sdk.create_sandbox.return_value = mock_sandbox
+        MockClient.return_value = mock_sdk
+
+        factory = create_sandbox_backend_factory(template_name="t")
+        backend = factory(MagicMock())
+
+        with caplog.at_level(logging.ERROR, logger="langchain_agent_sandbox.backend"):
+            backend._finalizer()
+
+        _require(
+            any("Finalizer failed to delete sandbox" in r.message for r in caplog.records),
+            f"Expected finalizer leak log, got records: {[r.message for r in caplog.records]}",
+        )
+        _require(
+            any("API unreachable" in r.message for r in caplog.records),
+            "Expected underlying error message in finalizer log",
+        )
+
+
+# --- from_template lifecycle tests ----------------------------------------
+
+
+def test_from_template_enter_failure_propagates():
+    """If create_sandbox fails inside __enter__, the exception propagates.
+
+    Pins the current behavior so a refactor that silently swallows the
+    failure won't slip through. The factory wrapper has its own
+    finalizer-based cleanup, but a user using `from_template()` directly
+    inside a `with` block expects an exception when provisioning fails.
+    """
+    mock_sdk = MagicMock()
+    mock_sdk.create_sandbox.side_effect = RuntimeError("template not found")
+
+    backend = AgentSandboxBackend(
+        sandbox=None,  # type: ignore[arg-type]
+        manage_lifecycle=True,
+        sdk_client=mock_sdk,
+        _template="missing",
+        _namespace="default",
+    )
+
+    try:
+        backend.__enter__()
+    except RuntimeError as e:
+        _require("template not found" in str(e), f"Unexpected message: {e}")
+    else:
+        pytest.fail("Expected RuntimeError to propagate from __enter__")
+
+    # _sandbox should still be None — nothing was provisioned, so
+    # nothing should be torn down. A subsequent __exit__ on this
+    # backend (e.g. from a `with` block that caught the error) must
+    # be a no-op.
+    _require(backend._sandbox is None, "Expected _sandbox to remain None")
+    backend.__exit__(RuntimeError, RuntimeError("test"), None)
+    mock_sdk.delete_sandbox.assert_not_called()
+
+
+def test_exit_does_not_delete_when_manage_lifecycle_false():
+    """`manage_lifecycle=False` opts out of automatic cleanup on __exit__.
+
+    This is the contract for users who want to attach an existing
+    Sandbox handle and manage its lifecycle separately. A regression
+    that ignored the flag would surprise-delete user-managed sandboxes.
+    """
+    mock_sdk = MagicMock()
+    sandbox = StubSandbox()
+    sandbox.claim_name = "user-managed-claim"
+
+    backend = AgentSandboxBackend(
+        sandbox=sandbox,
+        manage_lifecycle=False,
+        sdk_client=mock_sdk,
+    )
+
+    # Enter the backend (no-op when manage_lifecycle=False — the
+    # provided sandbox is used as-is) then exit it.
+    backend.__enter__()
+    backend.__exit__(None, None, None)
+
+    mock_sdk.delete_sandbox.assert_not_called()
+
+
+def test_exit_reraises_cleanup_error_on_happy_path():
+    """When the user's `with` block exits cleanly, a delete failure must surface.
+
+    Otherwise leaked sandboxes are silent — the user thinks their
+    cleanup ran but the controller still has the claim around.
+    """
+    mock_sdk = MagicMock()
+    mock_sdk.delete_sandbox.side_effect = RuntimeError("API unreachable")
+    sandbox = StubSandbox()
+    sandbox.claim_name = "leaked-claim"
+
+    backend = AgentSandboxBackend(
+        sandbox=sandbox,
+        manage_lifecycle=True,
+        sdk_client=mock_sdk,
+    )
+    backend.__enter__()
+
+    try:
+        backend.__exit__(None, None, None)
+    except RuntimeError as e:
+        _require("API unreachable" in str(e), f"Unexpected message: {e}")
+    else:
+        pytest.fail("Expected cleanup RuntimeError to be re-raised on the happy path")
+
+
+def test_exit_warns_when_cleanup_fails_with_traceback_only_unwind():
+    """When __exit__ is called with exc=None but exc_type set (tb-only path),
+    cleanup failure surfaces as a ResourceWarning rather than raising.
+
+    Edge case: some context-manager invocations pass `(exc_type, None, tb)`
+    when the exception value has been consumed. ExceptionGroup needs a
+    real exception instance, so we fall back to a ResourceWarning to
+    keep the leak visible to operators.
+    """
+    import warnings
+
+    mock_sdk = MagicMock()
+    mock_sdk.delete_sandbox.side_effect = RuntimeError("teardown also broken")
+    sandbox = StubSandbox()
+    sandbox.claim_name = "leaked-claim"
+
+    backend = AgentSandboxBackend(
+        sandbox=sandbox,
+        manage_lifecycle=True,
+        sdk_client=mock_sdk,
+    )
+    backend.__enter__()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        backend.__exit__(ValueError, None, None)
+
+    _require(
+        any(issubclass(w.category, ResourceWarning) for w in caught),
+        f"Expected ResourceWarning for tb-only unwind, got: {[w.category for w in caught]}",
+    )
+    mock_sdk.delete_sandbox.assert_called_once()
 
 
 # --- Policy wrapper tests ---
@@ -1028,7 +1491,7 @@ def test_upload_files_permission_denied_file():
 
 
 def test_audit_log_exception_does_not_block_operation():
-    """Test that failing audit log callback doesn't prevent operation."""
+    """Default fail-open behavior: failing audit log doesn't prevent operation."""
     def failing_audit_log(operation: str, target: str, meta: dict):
         raise Exception("Audit service unavailable")
 
@@ -1040,6 +1503,354 @@ def test_audit_log_exception_does_not_block_operation():
     result = wrapped.execute("echo test")
     _require(result.exit_code == 0, "Expected command to succeed despite audit failure")
     _require(result.output == "ok", f"Unexpected output: {result.output}")
+
+
+def test_strict_audit_blocks_execute_when_audit_log_fails():
+    """strict_audit=True: a failing audit log refuses execute()."""
+    def failing_audit_log(operation: str, target: str, meta: dict):
+        raise RuntimeError("SIEM unreachable")
+
+    client = StubSandbox(run_result=SimpleNamespace(stdout="ok", stderr="", exit_code=0))
+    backend = AgentSandboxBackend(client)
+    wrapped = SandboxPolicyWrapper(
+        backend, audit_log=failing_audit_log, strict_audit=True,
+    )
+
+    result = wrapped.execute("echo test")
+
+    _require(result.exit_code == 1, "Expected command to be refused")
+    _require(
+        "Audit log unavailable" in result.output,
+        f"Expected refusal message, got: {result.output!r}",
+    )
+    # The underlying backend.execute should NOT have been called.
+    _require(
+        client.commands.last_command is None,
+        "Backend execute must not run when audit fails in strict mode",
+    )
+
+
+def test_strict_audit_blocks_write_when_audit_log_fails():
+    """strict_audit=True: a failing audit log refuses write()."""
+    def failing_audit_log(operation: str, target: str, meta: dict):
+        raise RuntimeError("SIEM unreachable")
+
+    client = StubSandbox()
+    backend = AgentSandboxBackend(client)
+    backend._exists = lambda _: False
+    backend._ensure_parent_dir = lambda _: None
+    upload_calls = []
+    backend._upload_bytes = lambda path, content: upload_calls.append((path, content))
+
+    wrapped = SandboxPolicyWrapper(
+        backend, audit_log=failing_audit_log, strict_audit=True,
+    )
+
+    result = wrapped.write("/app/file.txt", "content")
+
+    _require(result.error is not None, "Expected write to be refused")
+    _require(
+        "Audit log unavailable" in result.error,
+        f"Expected refusal message, got: {result.error!r}",
+    )
+    _require(upload_calls == [], "Backend write must not run when audit fails in strict mode")
+
+
+def test_strict_audit_blocks_upload_files_when_audit_log_fails():
+    """strict_audit=True: a failing audit log refuses upload_files entries."""
+    def failing_audit_log(operation: str, target: str, meta: dict):
+        raise RuntimeError("SIEM unreachable")
+
+    client = StubSandbox()
+    backend = AgentSandboxBackend(client)
+    backend._file_state = lambda _: "missing"
+    backend._dir_state = lambda _: "writable"
+    upload_calls = []
+    backend._upload_bytes = lambda path, content: upload_calls.append((path, content))
+
+    wrapped = SandboxPolicyWrapper(
+        backend, audit_log=failing_audit_log, strict_audit=True,
+    )
+
+    responses = wrapped.upload_files([("/app/file.txt", b"data")])
+
+    _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
+    _require(
+        responses[0].error is not None and "Audit log unavailable" in responses[0].error,
+        f"Expected audit-failure deny string, got {responses[0].error!r}",
+    )
+    _require(upload_calls == [], "Backend upload must not run when audit fails in strict mode")
+
+
+def test_strict_audit_passes_through_when_audit_log_succeeds():
+    """strict_audit=True only blocks on FAILURE — happy path still works."""
+    audit_calls = []
+
+    def good_audit_log(operation: str, target: str, meta: dict):
+        audit_calls.append((operation, target, meta))
+
+    client = StubSandbox(run_result=SimpleNamespace(stdout="ok", stderr="", exit_code=0))
+    backend = AgentSandboxBackend(client)
+    wrapped = SandboxPolicyWrapper(
+        backend, audit_log=good_audit_log, strict_audit=True,
+    )
+
+    result = wrapped.execute("echo test")
+
+    _require(result.exit_code == 0, "Expected command to succeed")
+    _require(len(audit_calls) == 1, f"Expected 1 audit call, got {len(audit_calls)}")
+    _require(audit_calls[0][0] == "execute", f"Unexpected operation: {audit_calls[0][0]}")
+
+
+def test_strict_audit_blocks_edit_when_audit_log_fails():
+    """strict_audit=True: a failing audit log refuses edit().
+
+    Pins parity with execute/write/upload — without this test, a
+    refactor that drops the deny check from SandboxPolicyWrapper.edit
+    would not be caught.
+    """
+    def failing_audit_log(operation: str, target: str, meta: dict):
+        raise RuntimeError("SIEM unreachable")
+
+    client = StubSandbox()
+    backend = AgentSandboxBackend(client)
+    edit_calls = []
+    backend.edit = lambda *a, **kw: edit_calls.append((a, kw))  # type: ignore[assignment]
+
+    wrapped = SandboxPolicyWrapper(
+        backend, audit_log=failing_audit_log, strict_audit=True,
+    )
+
+    result = wrapped.edit("/app/file.txt", "old", "new", replace_all=False)
+
+    _require(result.error is not None, "Expected edit to be refused")
+    _require(
+        "Audit log unavailable" in result.error,
+        f"Expected refusal message, got: {result.error!r}",
+    )
+    _require(result.occurrences == 0, "Expected occurrences=0 on refusal")
+    _require(edit_calls == [], "Backend edit must not run when audit fails in strict mode")
+
+
+def test_strict_audit_with_no_audit_log_is_a_noop():
+    """strict_audit=True + audit_log=None must NOT refuse operations.
+
+    Strict mode only matters when there's a callback to fail. A
+    regression that accidentally treated `audit_log=None` as "no audit
+    available, refuse" would break every wrapper that opts into strict
+    mode without configuring a callback.
+    """
+    client = StubSandbox(run_result=SimpleNamespace(stdout="ok", stderr="", exit_code=0))
+    backend = AgentSandboxBackend(client)
+    wrapped = SandboxPolicyWrapper(
+        backend, audit_log=None, strict_audit=True,
+    )
+
+    result = wrapped.execute("echo test")
+
+    _require(result.exit_code == 0, f"Expected exit_code=0, got {result.exit_code}")
+    _require(result.output == "ok", f"Unexpected output: {result.output!r}")
+
+
+def test_strict_audit_upload_files_preserves_deny_detail():
+    """strict_audit upload must surface the deny string, not 'policy_denied'.
+
+    Pins the consistency fix: write/edit preserve the deny string in
+    their error fields, and upload_files used to flatten it to
+    'policy_denied'. After the fix, the audit-failure detail
+    propagates so callers can distinguish 'audit pipeline down' from
+    a deny_prefixes hit.
+    """
+    def failing_audit_log(operation: str, target: str, meta: dict):
+        raise RuntimeError("SIEM unreachable")
+
+    client = StubSandbox()
+    backend = AgentSandboxBackend(client)
+    backend._file_state = lambda _: "missing"
+    backend._dir_state = lambda _: "writable"
+
+    wrapped = SandboxPolicyWrapper(
+        backend, audit_log=failing_audit_log, strict_audit=True,
+    )
+
+    responses = wrapped.upload_files([("/app/file.txt", b"data")])
+
+    _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
+    _require(
+        responses[0].error is not None and "Audit log unavailable" in responses[0].error,
+        f"Expected deny detail in error, got {responses[0].error!r}",
+    )
+    _require(
+        "SIEM unreachable" in responses[0].error,
+        f"Expected underlying error in deny string, got {responses[0].error!r}",
+    )
+
+
+@pytest.mark.parametrize(
+    "operation,call",
+    [
+        ("write", lambda w: w.write("/app/x.txt", "data")),
+        ("edit", lambda w: w.edit("/app/x.txt", "old", "new", False)),
+        (
+            "upload",
+            lambda w: w.upload_files([("/app/x.txt", b"data")]),
+        ),
+    ],
+)
+def test_default_audit_failure_does_not_block_write_edit_upload(operation, call):
+    """Fail-open is the default: a failing audit log must not block write/edit/upload.
+
+    Previously only `execute` had explicit fail-open coverage. A
+    refactor that accidentally made any of these fail-closed by
+    default would slip through. Parametrized over the three remaining
+    audited operations.
+    """
+    audit_attempts = []
+
+    def failing_audit_log(op: str, target: str, meta: dict):
+        audit_attempts.append((op, target))
+        raise RuntimeError("audit pipe down")
+
+    client = StubSandbox(run_result=SimpleNamespace(stdout="", stderr="", exit_code=0))
+    backend = AgentSandboxBackend(client)
+    # Stub backend methods so the test exercises the wrapper's
+    # decision logic without going through real file ops.
+    backend._exists = lambda _: False
+    backend._ensure_parent_dir = lambda _: None
+    upload_calls = []
+    backend._upload_bytes = lambda path, content: upload_calls.append((path, content))
+    backend._file_state = lambda _: "missing"
+    backend._dir_state = lambda _: "writable"
+
+    # edit() exercises a different code path: stub the underlying
+    # backend.edit so we can assert the wrapper called through.
+    edit_calls = []
+    real_edit = backend.edit
+    def stub_edit(*a, **kw):
+        edit_calls.append((a, kw))
+        return real_edit.__class__  # placeholder; not used
+    if operation == "edit":
+        from langchain_agent_sandbox.backend import EditResult
+        backend.edit = lambda *a, **kw: (  # type: ignore[assignment]
+            edit_calls.append((a, kw)) or EditResult(error=None, path=a[0], occurrences=1)
+        )
+
+    wrapped = SandboxPolicyWrapper(backend, audit_log=failing_audit_log)
+
+    result = call(wrapped)
+
+    _require(
+        len(audit_attempts) >= 1,
+        f"Expected audit log to have been invoked, got {audit_attempts}",
+    )
+
+    if operation == "upload":
+        _require(
+            len(result) == 1 and result[0].error is None,
+            f"Expected upload to succeed in fail-open mode, got {result}",
+        )
+        _require(
+            len(upload_calls) == 1,
+            f"Expected backend upload to run, got {upload_calls}",
+        )
+    elif operation == "write":
+        _require(
+            result.error is None,
+            f"Expected write to succeed in fail-open mode, got error={result.error!r}",
+        )
+        _require(
+            len(upload_calls) == 1,
+            f"Expected backend upload to run, got {upload_calls}",
+        )
+    elif operation == "edit":
+        _require(
+            result.error is None,
+            f"Expected edit to succeed in fail-open mode, got error={result.error!r}",
+        )
+        _require(
+            len(edit_calls) == 1,
+            f"Expected backend edit to run, got {edit_calls}",
+        )
+
+
+def test_exit_logs_cleanup_error_when_masked_by_user_exception(caplog):
+    """When a user exception is in flight, the cleanup error must be logged.
+
+    Pins the contract that cleanup failures during exception unwind
+    are surfaced via logging — a refactor that dropped the
+    `logger.error` call would silently lose the leak signal.
+    """
+    import logging
+
+    mock_sdk = MagicMock()
+    mock_sdk.delete_sandbox.side_effect = RuntimeError("teardown also broken")
+    sandbox = StubSandbox()
+    sandbox.claim_name = "leaked-claim"
+
+    backend = AgentSandboxBackend(
+        sandbox=sandbox,
+        manage_lifecycle=True,
+        sdk_client=mock_sdk,
+    )
+    backend.__enter__()
+
+    user_exc = ValueError("the original problem")
+    with caplog.at_level(logging.ERROR, logger="langchain_agent_sandbox.backend"):
+        # __exit__ on the user-exception path should bundle both via
+        # ExceptionGroup and also log. We don't assert no-raise here
+        # because the new behavior IS to raise an ExceptionGroup —
+        # see test_exit_raises_exception_group_when_cleanup_fails_during_unwind.
+        try:
+            backend.__exit__(type(user_exc), user_exc, None)
+        except BaseExceptionGroup:
+            pass
+
+    _require(
+        any("Failed to delete sandbox" in r.message for r in caplog.records),
+        f"Expected cleanup-failure log on the masked path, got {[r.message for r in caplog.records]}",
+    )
+
+
+def test_exit_raises_exception_group_when_cleanup_fails_during_unwind():
+    """Cleanup failure during exception unwind raises BaseExceptionGroup.
+
+    The previous behavior swallowed the cleanup error and re-raised
+    only the user exception, hiding the leaked sandbox. The new
+    behavior bundles both into an ExceptionGroup so neither is lost.
+    """
+    mock_sdk = MagicMock()
+    mock_sdk.delete_sandbox.side_effect = RuntimeError("teardown also broken")
+    sandbox = StubSandbox()
+    sandbox.claim_name = "leaked-claim"
+
+    backend = AgentSandboxBackend(
+        sandbox=sandbox,
+        manage_lifecycle=True,
+        sdk_client=mock_sdk,
+    )
+    backend.__enter__()
+
+    user_exc = ValueError("the original problem")
+    try:
+        backend.__exit__(type(user_exc), user_exc, None)
+    except BaseExceptionGroup as eg:
+        # Both exceptions must be present in the group.
+        types = {type(e) for e in eg.exceptions}
+        _require(
+            ValueError in types,
+            f"Expected ValueError in ExceptionGroup, got {types}",
+        )
+        _require(
+            RuntimeError in types,
+            f"Expected RuntimeError in ExceptionGroup, got {types}",
+        )
+        # Original user exception should be one of the peers, not chained.
+        _require(
+            any(e is user_exc for e in eg.exceptions),
+            "Original user exception should be a peer in the ExceptionGroup",
+        )
+    else:
+        pytest.fail("Expected BaseExceptionGroup to be raised")
 
 
 # --- Path traversal, error propagation, and find/grep edge cases ---
@@ -1364,8 +2175,8 @@ def test_execute_omits_timeout_kwarg_when_none():
     )
 
 
-def test_execute_returns_timeout_exit_code_on_timeout_error():
-    """execute() should return exit_code=-2 and a 'Timed out' prefix on TimeoutError."""
+def test_execute_returns_timeout_exit_code_on_builtin_timeout_error():
+    """execute() should return exit_code=-2 on a direct Python TimeoutError."""
     client = StubSandbox()
     client.commands.run = lambda cmd, **kw: (_ for _ in ()).throw(
         TimeoutError("command exceeded 5s")
@@ -1377,6 +2188,36 @@ def test_execute_returns_timeout_exit_code_on_timeout_error():
     _require(result.exit_code == -2, f"Expected exit_code=-2 on timeout, got {result.exit_code}")
     _require("Timed out" in result.output, f"Expected 'Timed out' prefix, got: {result.output}")
     _require("command exceeded 5s" in result.output, f"Expected original message, got: {result.output}")
+
+
+def test_execute_returns_timeout_exit_code_on_wrapped_requests_timeout():
+    """execute() should detect a requests.exceptions.Timeout buried in the cause chain.
+
+    The k8s_agent_sandbox SDK's connector catches requests.exceptions.Timeout
+    and re-raises as SandboxRequestError via `raise ... from e`. A real HTTP
+    read timeout therefore arrives at the backend as a RuntimeError subclass
+    whose __cause__ is the original Timeout — NOT as a builtin TimeoutError.
+    This test simulates that exact shape with a custom wrapper class that
+    mirrors SandboxRequestError's inheritance (RuntimeError, not TimeoutError)
+    and verifies the cause-chain walker still classifies it as a timeout.
+    """
+    from requests.exceptions import ReadTimeout
+
+    class _FakeSandboxRequestError(RuntimeError):
+        """Stand-in for k8s_agent_sandbox.exceptions.SandboxRequestError."""
+
+    original = ReadTimeout("HTTPConnectionPool(...): Read timed out. (read timeout=5)")
+    wrapped = _FakeSandboxRequestError("Failed to communicate with the sandbox at ...")
+    wrapped.__cause__ = original
+
+    client = StubSandbox()
+    client.commands.run = lambda cmd, **kw: (_ for _ in ()).throw(wrapped)
+    backend = AgentSandboxBackend(client)
+
+    result = backend.execute("sleep 10", timeout=5)
+
+    _require(result.exit_code == -2, f"Expected exit_code=-2 on wrapped timeout, got {result.exit_code}")
+    _require("Timed out" in result.output, f"Expected 'Timed out' prefix, got: {result.output}")
 
 
 def test_execute_returns_generic_error_exit_code_on_other_exception():

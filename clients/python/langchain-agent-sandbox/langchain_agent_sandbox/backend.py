@@ -19,6 +19,7 @@ import logging
 import posixpath
 import re
 import shlex
+import weakref
 from pathlib import PurePosixPath
 from typing import Callable, Iterable, Optional, Dict, List, Union, Tuple, Any
 
@@ -55,6 +56,67 @@ except (ImportError, ModuleNotFoundError) as exc:
 logger = logging.getLogger(__name__)
 
 
+# `requests` is a transitive dependency of `k8s_agent_sandbox`, so the
+# import is always satisfiable when this module is importable, but we
+# guard it defensively so a future SDK refactor that drops requests
+# doesn't break our own import.
+try:
+    from requests.exceptions import Timeout as _RequestsTimeout
+except ImportError:  # pragma: no cover - defensive
+    _RequestsTimeout = None  # type: ignore[assignment]
+
+# `httpx` is used by the SDK's async transport. Imported defensively
+# so the timeout walker also catches `httpx.TimeoutException` if a
+# future code path surfaces an async-transport exception synchronously.
+try:
+    from httpx import TimeoutException as _HttpxTimeout
+except ImportError:  # pragma: no cover - defensive
+    _HttpxTimeout = None  # type: ignore[assignment]
+
+
+def _is_timeout_exception(exc: BaseException) -> bool:
+    """Return True if ``exc`` (or any chained cause/context) is a timeout.
+
+    Walks ``__cause__``/``__context__`` so wrapped exceptions are
+    detected even when the backend doesn't import the wrapper class
+    directly. Three layers of detection, in order:
+
+    1. The Python builtin ``TimeoutError``.
+    2. Known transport-level timeout types (``requests.exceptions.Timeout``,
+       ``httpx.TimeoutException``) if installed.
+    3. A duck-typed fallback on the exception class name (``"timeout"``
+       substring) — catches future SDK exception classes that don't
+       chain via ``raise ... from e`` and that we haven't seen yet.
+       This is a soft signal but strictly better than the hard miss
+       that bare ``except TimeoutError`` produced before.
+
+    The duck-typed fallback can produce false positives if a non-timeout
+    exception class happens to contain "timeout" in its name. The
+    tradeoff is acceptable: ``execute()`` already classifies any
+    unhandled exception as a generic failure with ``exit_code=-1``,
+    so escalating it to ``exit_code=-2`` (timeout) for an exception
+    named ``"FooTimeoutPolicyError"`` is a strictly better signal than
+    flattening it to a generic error.
+    """
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, TimeoutError):
+            return True
+        if _RequestsTimeout is not None and isinstance(cur, _RequestsTimeout):
+            return True
+        if _HttpxTimeout is not None and isinstance(cur, _HttpxTimeout):
+            return True
+        # Duck-typed fallback for exceptions that don't chain via
+        # `from e` (background workers, asyncio.to_thread boundaries,
+        # explicit `raise X() from None`, future SDK exception types).
+        if "timeout" in type(cur).__name__.lower():
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _compile_glob(pattern: str) -> Callable[[str], bool]:
     """Compile a glob pattern into a matcher that correctly handles ``**``.
 
@@ -86,37 +148,68 @@ def _compile_glob(pattern: str) -> Callable[[str], bool]:
         compiled_basename = re.compile("^" + segment_regex + "$")
         return lambda path: compiled_basename.fullmatch(posixpath.basename(path)) is not None
 
-    # Split the pattern on `/` into segments and translate each one,
-    # treating `**` specially so it can consume surrounding slashes.
+    # Split the pattern on `/` into segments. Collapse consecutive `**`
+    # segments since `**/**` is semantically identical to a single `**`.
     segments = pattern.split("/")
+    collapsed: List[str] = []
+    for seg in segments:
+        if seg == "**" and collapsed and collapsed[-1] == "**":
+            continue
+        collapsed.append(seg)
+    segments = collapsed
+
+    # Pattern is just `**` (after collapsing) → matches anything.
+    if len(segments) == 1 and segments[0] == "**":
+        return lambda path: True
+
+    # Build the regex piece by piece. The key invariant: `**` always
+    # consumes its surrounding slashes, never adds a spurious one.
+    # That means a middle `**` produces `/(?:[^/]+/)*` so `a/**/b`
+    # requires at least `a/b` (zero intermediate components) and rejects
+    # `ab`. Leading `**` produces `(?:[^/]+/)*` (zero or more full
+    # components followed by a slash, then the next literal segment
+    # follows without an extra slash). Trailing `**` produces `/.*` so
+    # `a/**` matches `a/`, `a/b`, and `a/b/c`, but NOT bare `a` —
+    # mirroring the gitignore semantic that "x/**" means "things inside
+    # x/".
     regex_parts: List[str] = []
     for i, seg in enumerate(segments):
+        is_first = i == 0
+        is_last = i == len(segments) - 1
+
         if seg == "**":
-            # `**/` absorbs zero or more path components with trailing
-            # slashes; `/**` at the end absorbs one or more; standalone
-            # `**` matches anything.
-            if i == 0:
-                # Leading **: `(?:.*/)?` — zero or more components
-                regex_parts.append("(?:.*/)?")
-            elif i == len(segments) - 1:
-                # Trailing **: `(?:/.*)?` — zero or more components
-                regex_parts.append("(?:/.*)?")
+            if is_first:
+                # Leading: emit zero-or-more components with trailing /.
+                # The next literal segment will NOT get a prepended `/`.
+                regex_parts.append("(?:[^/]+/)*")
+            elif is_last:
+                # Trailing: require a slash plus anything (possibly
+                # empty). `a/**` matches `a/`, `a/b`, `a/b/c` but not
+                # bare `a` itself, mirroring the gitignore semantic
+                # that "x/**" means "things inside x/".
+                regex_parts.append("/.*")
             else:
-                # Middle **: `(?:.*/)?` handles zero or more components
-                regex_parts.append("(?:.*/)?")
+                # Middle: require the literal slash that was part of
+                # the pattern, plus zero or more components with their
+                # own trailing slashes. The next literal segment will
+                # NOT get a prepended `/` because this block ends in
+                # one already.
+                regex_parts.append("/(?:[^/]+/)*")
             continue
 
-        # Ordinary segment — translate fnmatch-style wildcards, but don't
-        # let `*` or `?` cross a `/`.
-        segment_regex = _translate_glob_segment(seg)
-        if i > 0 and segments[i - 1] != "**":
-            regex_parts.append("/")
-        regex_parts.append(segment_regex)
+        # Literal segment (possibly with `*`, `?`, `[...]` wildcards).
+        # Emit a `/` separator unless this is the first segment or the
+        # previous segment was a `**` token that already produced a
+        # trailing slash.
+        if not is_first:
+            prev = segments[i - 1]
+            if prev != "**":
+                regex_parts.append("/")
+            # else: previous `**` token already ends with `/`, don't
+            # emit a second one.
+        regex_parts.append(_translate_glob_segment(seg))
 
     regex_str = "^" + "".join(regex_parts) + "$"
-    # Collapse any accidental consecutive `/` that can arise when `**`
-    # sits between two literal segments.
-    regex_str = regex_str.replace("(?:.*/)?/", "(?:.*/)?")
     compiled = re.compile(regex_str)
     return lambda path: compiled.fullmatch(path) is not None
 
@@ -245,15 +338,44 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         if self._manage_lifecycle and self._sandbox is not None:
             claim = getattr(self._sandbox, "claim_name", None)
             ns = getattr(self._sandbox, "namespace", None)
+            cleanup_error: Optional[BaseException] = None
             try:
                 self._sdk_client.delete_sandbox(claim_name=claim, namespace=ns)
             except Exception as e:
+                cleanup_error = e
                 logger.error(
                     "Failed to delete sandbox (claim=%s, namespace=%s): %s",
                     claim, ns, e,
                 )
             finally:
                 self._sandbox = None
+            if cleanup_error is not None:
+                if exc_type is None:
+                    # Happy-path leak: re-raise so the user knows their
+                    # sandbox wasn't torn down. Without this, leaked
+                    # sandboxes are silent.
+                    raise cleanup_error
+                # Unwinding from a user exception. Bundle both into an
+                # ExceptionGroup so the cleanup failure is visible
+                # alongside the original — `raise cleanup_error` here
+                # would `__context__`-chain the original underneath
+                # and tools that pretty-print exceptions tend to bury
+                # the chain. ExceptionGroup makes both peers explicit.
+                # Fall back to a `ResourceWarning` if `exc` was already
+                # consumed (e.g. tb-only path) so the leak is still
+                # visible to operators.
+                if exc is not None:
+                    raise BaseExceptionGroup(
+                        "sandbox cleanup failed during exception unwind",
+                        [exc, cleanup_error],
+                    ) from None
+                import warnings
+                warnings.warn(
+                    f"sandbox cleanup failed during exception unwind: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}",
+                    ResourceWarning,
+                    stacklevel=2,
+                )
 
     async def __aenter__(self) -> "AgentSandboxBackend":
         return self.__enter__()
@@ -333,14 +455,21 @@ class AgentSandboxBackend(SandboxBackendProtocol):
                 result = self._sandbox.commands.run(command, timeout=timeout)
             else:
                 result = self._sandbox.commands.run(command)
-        except TimeoutError as e:
-            logger.warning("execute timed out for command: %s", e)
-            return ExecuteResponse(
-                output=f"Timed out: {e}",
-                exit_code=-2,
-                truncated=False,
-            )
         except Exception as e:
+            # Walk the exception cause/context chain to detect timeouts —
+            # the k8s_agent_sandbox SDK wraps `requests.exceptions.Timeout`
+            # into `SandboxRequestError` via `raise ... from e`, so a real
+            # HTTP read/connect timeout doesn't arrive as a builtin
+            # `TimeoutError`. Without this walk, the explicit
+            # `except TimeoutError` branch would be dead code against
+            # the production transport layer.
+            if _is_timeout_exception(e):
+                logger.warning("execute timed out for command: %s", e)
+                return ExecuteResponse(
+                    output=f"Timed out: {e}",
+                    exit_code=-2,
+                    truncated=False,
+                )
             logger.error("execute failed: %s", e)
             return ExecuteResponse(
                 output=f"Error: {e}",
@@ -509,9 +638,22 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             return GrepResult(matches=[], error=f"grep failed in '{base_path}': {e}")
         # exit 1 = no matches (normal), exit >= 2 = actual error
         if result.exit_code >= 2:
+            # The sandbox runtime executes commands via
+            # subprocess.run + shlex.split (no shell), so a `2>&1`
+            # redirect would be passed as a literal argument rather
+            # than merging streams. grep's actual error text therefore
+            # lives on `result.stderr`. Prefer stderr; fall back to
+            # stdout and finally to the exit code if both are empty.
+            # Matches the error-detail convention used in ls() /
+            # glob() / _ensure_parent_dir.
+            detail = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or f"exit code {result.exit_code}"
+            )
             return GrepResult(
                 matches=[],
-                error=f"grep failed in '{base_path}': {result.stdout.strip() or 'unknown error'}",
+                error=f"grep failed in '{base_path}': {detail}",
             )
         if not result.stdout.strip():
             return GrepResult(matches=[])
@@ -569,6 +711,40 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             error so callers can proceed with what was accessible.
         """
         internal_path = self._to_internal(path)
+
+        # Compile the matcher first so a malformed pattern (e.g. an
+        # invalid regex character class) fails fast with a typed
+        # GlobResult error rather than propagating an uncaught
+        # exception through the caller. This MUST happen before the
+        # find command runs — it's cheap and lets us skip the round
+        # trip to the sandbox when the pattern is broken.
+        normalized_pattern = pattern.lstrip("/")
+        try:
+            matcher = _compile_glob(normalized_pattern)
+        except re.error as e:
+            return GlobResult(
+                matches=[],
+                error=f"invalid glob pattern {pattern!r}: {e}",
+            )
+        except Exception as e:
+            # Catch-all for non-re.error failures from a translator
+            # regression (IndexError, TypeError, RecursionError, ...).
+            # The contract for glob() is that callers can rely on a
+            # typed GlobResult; an uncaught exception here would break
+            # every caller that branches on `result.error`. Log so the
+            # underlying bug is visible server-side.
+            logger.error(
+                "glob matcher compilation failed for pattern %r: %s: %s",
+                pattern, type(e).__name__, e,
+            )
+            return GlobResult(
+                matches=[],
+                error=(
+                    f"internal error compiling glob pattern {pattern!r}: "
+                    f"{type(e).__name__}: {e}"
+                ),
+            )
+
         # Use -printf to embed type info, avoiding per-entry _is_dir() roundtrips.
         # Format: "d /path" for directories, "f /path" for files.
         # -L follows symlinks so symlinked directories are classified correctly.
@@ -592,8 +768,6 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             if not result.stdout.strip():
                 return GlobResult(matches=[], error=f"glob failed in '{path}': {detail}")
 
-        normalized_pattern = pattern.lstrip("/")
-        matcher = _compile_glob(normalized_pattern)
         entries: List[FileInfo] = []
 
         for line in result.stdout.splitlines():
@@ -997,6 +1171,18 @@ def create_sandbox_backend_factory(
     when invoked with a ToolRuntime. The ToolRuntime provides state and store,
     but our backend doesn't need them since execution happens in the sandbox.
 
+    The factory eagerly provisions the sandbox before returning, so the
+    returned backend is immediately usable for `execute`/`ls`/`read`/etc.
+    A finalizer is registered to delete the sandbox when the backend is
+    garbage-collected or at interpreter shutdown -- the deepagents
+    ``create_deep_agent(backend=...)`` contract uses the factory result
+    directly without a ``with`` block, so the lifecycle has to be
+    managed transparently rather than via a context manager.
+
+    If you DO want context-manager semantics (eager teardown on exit
+    rather than GC-time), use ``AgentSandboxBackend.from_template(...)``
+    directly inside a ``with`` block.
+
     Usage:
         from deepagents import create_deep_agent
         from langchain_agent_sandbox import create_sandbox_backend_factory
@@ -1011,27 +1197,116 @@ def create_sandbox_backend_factory(
         **kwargs: Additional arguments passed to AgentSandboxBackend.from_template().
 
     Returns:
-        A factory callable that accepts a ToolRuntime and returns an AgentSandboxBackend.
+        A factory callable that accepts a ToolRuntime and returns a fully
+        initialized AgentSandboxBackend.
     """
     def factory(_runtime: Any) -> AgentSandboxBackend:
-        return AgentSandboxBackend.from_template(
+        backend = AgentSandboxBackend.from_template(
             template_name=template_name,
             namespace=namespace,
             **kwargs,
         )
+        # Eagerly enter so the sandbox is provisioned and `_sandbox` is
+        # populated before the deepagents agent loop starts calling
+        # methods on it. Without this, the first execute()/ls()/etc.
+        # raises `AttributeError: 'NoneType' object has no attribute
+        # 'commands'` because from_template() defers sandbox creation
+        # to __enter__.
+        backend.__enter__()
+        # Register a finalizer that tears the sandbox down when the
+        # backend is garbage-collected OR at interpreter shutdown
+        # (whichever comes first). weakref.finalize captures strong
+        # references to the SDK client and sandbox handle in its
+        # closure, so the cleanup can fire even after the backend
+        # itself is collected. If the user explicitly calls __exit__
+        # on the backend, the finalizer's redundant cleanup attempt
+        # 404s and is silently swallowed by `_factory_atexit_cleanup`.
+        #
+        # The finalize handle is also stored on the backend so it can
+        # be invoked deterministically from tests (calling
+        # `backend._finalizer()` triggers the cleanup synchronously
+        # without relying on `del + gc.collect()` GC ordering).
+        backend._finalizer = weakref.finalize(  # type: ignore[attr-defined]
+            backend,
+            _factory_atexit_cleanup,
+            backend._sdk_client,
+            backend._sandbox,
+        )
+        return backend
+
     return factory
+
+
+def _factory_atexit_cleanup(sdk_client: Any, sandbox: Any) -> None:
+    """Best-effort sandbox teardown for factory-created backends.
+
+    Called by ``weakref.finalize`` when the backend is garbage-collected
+    OR at interpreter shutdown. Two failure modes are silenced:
+
+    1. A 404 from the SDK — the user already called ``__exit__``
+       explicitly and the claim is already gone. Not actionable.
+    2. Any exception while logging — at interpreter shutdown the
+       logging subsystem may already be torn down, and a finalizer
+       that raises during shutdown produces a confusing traceback.
+
+    Every other failure (auth expiry, network partition, RBAC
+    revocation, API outage, malformed claim, transient 5xx) is logged
+    at ERROR so operators can see leaked sandboxes. Logging-during-GC
+    is safe; the shutdown-only concern is handled by the inner guard.
+    """
+    if sdk_client is None or sandbox is None:
+        return
+    claim = getattr(sandbox, "claim_name", None)
+    ns = getattr(sandbox, "namespace", None)
+    if claim is None:
+        return
+    try:
+        sdk_client.delete_sandbox(claim_name=claim, namespace=ns)
+    except Exception as e:
+        # 404 means the user's explicit __exit__ already cleaned up;
+        # this finalizer is the redundant best-effort path. Status
+        # comes from either the kubernetes ApiException shape or the
+        # requests Response shape, depending on which transport raised.
+        status = getattr(e, "status", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        if status == 404:
+            return
+        # Log the leak so it's at least visible. Wrap in its own try
+        # because at interpreter shutdown the logging machinery can
+        # be partially torn down — a logging failure inside the
+        # finalizer must not propagate.
+        try:
+            logger.error(
+                "Finalizer failed to delete sandbox (claim=%s, namespace=%s): "
+                "%s: %s",
+                claim, ns, type(e).__name__, e,
+            )
+        except Exception:
+            pass
 
 
 class SandboxPolicyWrapper:
     """Wraps AgentSandboxBackend with policy enforcement.
 
-    Provides enterprise-grade restrictions on sandbox operations:
-    - deny_prefixes: Block writes/edits under certain paths (e.g., /etc, /sys)
-    - deny_commands: Block commands containing specific patterns (e.g., rm -rf)
-    - audit_log: Optional callable for logging all operations
+    Provides best-effort restrictions on sandbox operations as an
+    application-layer guardrail. **This is not a security boundary**
+    -- the underlying sandbox controller and kernel-level isolation
+    (gVisor, Kata Containers, etc.) are the real security boundary.
 
-    The wrapper delegates all read operations directly to the backend,
-    while guarding write/edit/execute operations against policy rules.
+    Features:
+    - deny_prefixes: Block writes/edits under certain paths
+      (e.g., /etc, /sys). Paths are canonicalized before matching so
+      traversal-style bypasses like `/app/../etc` are caught.
+    - deny_commands: Substring match against execute() commands
+      (e.g., "rm -rf"). This is trivially bypassable via aliases or
+      shell variations -- treat it as a speed bump, not a barrier.
+    - audit_log: Optional callable invoked for every write / edit /
+      execute / upload operation. By default, callback failures are
+      logged at WARNING and the operation proceeds (fail-open). Set
+      ``strict_audit=True`` to refuse operations whose audit log
+      cannot be written -- use this when audit completeness matters
+      more than availability (e.g. compliance environments).
 
     Audit log callback signature:
         def audit_log(operation: str, target: str, metadata: dict) -> None:
@@ -1045,7 +1320,8 @@ class SandboxPolicyWrapper:
             backend,
             deny_prefixes=["/etc", "/sys", "/proc"],
             deny_commands=["rm -rf", "shutdown", "reboot"],
-            audit_log=lambda op, target, meta: print(f"{op}: {target}")
+            audit_log=lambda op, target, meta: print(f"{op}: {target}"),
+            strict_audit=False,  # default: fail-open audit
         )
     """
 
@@ -1055,6 +1331,8 @@ class SandboxPolicyWrapper:
         deny_prefixes: Optional[List[str]] = None,
         deny_commands: Optional[List[str]] = None,
         audit_log: Optional[Callable[[str, str, dict], None]] = None,
+        *,
+        strict_audit: bool = False,
     ) -> None:
         self._backend = backend
         self._deny_prefixes_write: List[str] = []
@@ -1072,6 +1350,7 @@ class SandboxPolicyWrapper:
             )
         self._deny_commands = deny_commands or []
         self._audit_log = audit_log
+        self._strict_audit = strict_audit
 
     def __enter__(self) -> "SandboxPolicyWrapper":
         self._backend.__enter__()
@@ -1085,6 +1364,45 @@ class SandboxPolicyWrapper:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self.__exit__(exc_type, exc, tb)
+
+    def _emit_audit(self, operation: str, target: str, metadata: dict) -> Optional[str]:
+        """Invoke the audit log callback if configured.
+
+        Returns ``None`` on success (or when no audit log is set), and
+        a deny-reason string when the operation should be refused. In
+        ``strict_audit=False`` mode (the default), audit failures are
+        logged at WARNING with full operation context (including
+        ``exc_info``) and the operation proceeds. In ``strict_audit=True``
+        mode, the same failures cause this method to return a refusal
+        string that callers convert into a per-operation denied result.
+        """
+        if self._audit_log is None:
+            return None
+        try:
+            self._audit_log(operation, target, metadata)
+            return None
+        except Exception as e:
+            if self._strict_audit:
+                logger.error(
+                    "Audit log callback failed for %s on %s "
+                    "(strict mode: refusing operation); metadata=%s",
+                    operation, target, metadata,
+                    exc_info=True,
+                )
+                return f"Audit log unavailable; refusing {operation}: {e}"
+            # Fail-open: include operation/target/metadata so SREs can
+            # diagnose audit-pipeline failures without grepping through
+            # the request log to find which call wasn't recorded.
+            # `exc_info=True` preserves the traceback for non-trivial
+            # callback failures (e.g. transient ConnectionError vs.
+            # configuration bug).
+            logger.warning(
+                "Audit log callback failed for %s on %s "
+                "(fail-open: operation will proceed); metadata=%s",
+                operation, target, metadata,
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     def _canonicalize_path(path: str) -> str:
@@ -1199,11 +1517,9 @@ class SandboxPolicyWrapper:
                 error=f"Policy denied: writes not allowed under '{file_path}'",
                 path=file_path,
             )
-        if self._audit_log:
-            try:
-                self._audit_log("write", file_path, {"size": len(content)})
-            except Exception as e:
-                logger.warning("Audit log callback failed (continuing): %s", e)
+        deny = self._emit_audit("write", file_path, {"size": len(content)})
+        if deny is not None:
+            return WriteResult(error=deny, path=file_path)
         return self._backend.write(file_path, content)
 
     async def awrite(self, file_path: str, content: str) -> WriteResult:
@@ -1224,11 +1540,9 @@ class SandboxPolicyWrapper:
                 path=file_path,
                 occurrences=0,
             )
-        if self._audit_log:
-            try:
-                self._audit_log("edit", file_path, {"replace_all": replace_all})
-            except Exception as e:
-                logger.warning("Audit log callback failed (continuing): %s", e)
+        deny = self._emit_audit("edit", file_path, {"replace_all": replace_all})
+        if deny is not None:
+            return EditResult(error=deny, path=file_path, occurrences=0)
         return self._backend.edit(file_path, old_string, new_string, replace_all)
 
     async def aedit(
@@ -1256,11 +1570,9 @@ class SandboxPolicyWrapper:
                 exit_code=1,
                 truncated=False,
             )
-        if self._audit_log:
-            try:
-                self._audit_log("execute", command, {})
-            except Exception as e:
-                logger.warning("Audit log callback failed (continuing): %s", e)
+        deny = self._emit_audit("execute", command, {})
+        if deny is not None:
+            return ExecuteResponse(output=deny, exit_code=1, truncated=False)
         return self._backend.execute(command, timeout=timeout)
 
     async def aexecute(
@@ -1283,13 +1595,17 @@ class SandboxPolicyWrapper:
         for idx, (path, payload) in enumerate(items):
             if self._is_denied_path(path, for_write=True):
                 responses[idx] = FileUploadResponse(path=path, error="policy_denied")
-            else:
-                if self._audit_log:
-                    try:
-                        self._audit_log("upload", path, {"size": len(payload)})
-                    except Exception as e:
-                        logger.warning("Audit log callback failed (continuing): %s", e)
-                allowed.append((idx, path, payload))
+                continue
+            deny = self._emit_audit("upload", path, {"size": len(payload)})
+            if deny is not None:
+                # In strict_audit mode the audit failure refuses the
+                # upload. Pass the deny string through so callers can
+                # distinguish "audit pipeline down" from a generic
+                # policy hit, mirroring the behavior of write/edit
+                # which preserve the same detail in their error fields.
+                responses[idx] = FileUploadResponse(path=path, error=deny)
+                continue
+            allowed.append((idx, path, payload))
 
         if allowed:
             backend_items = [(path, payload) for _, path, payload in allowed]
