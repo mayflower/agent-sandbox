@@ -411,6 +411,235 @@ describe("TunnelConnectionStrategy.connect (subprocess lifecycle)", () => {
 
     await strategy.close();
   });
+
+  // -------------------------------------------------------------------------
+  // C2: Concurrent connect() calls share a single subprocess
+  // -------------------------------------------------------------------------
+
+  it("concurrent connect() calls spawn only one kubectl subprocess", async () => {
+    // Without the #connectPromise memoization, two parallel
+    // connect() calls both spawn kubectl — the first subprocess
+    // gets orphaned (last-write wins on #process) and leaks forever
+    // because no close() can reach it.
+    mockSpawn.mockImplementation(() => new FakeChildProcess());
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, onConnect: () => void) => {
+        const sock = new FakeSocket();
+        setImmediate(onConnect);
+        return sock;
+      },
+    );
+
+    const strategy = new TunnelConnectionStrategy({
+      type: "tunnel",
+      portForwardReadyTimeout: 5,
+    });
+
+    const [a, b, c] = await Promise.all([
+      strategy.connect(),
+      strategy.connect(),
+      strategy.connect(),
+    ]);
+
+    expect(a).toBe("http://127.0.0.1:12345");
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+    // Critical: exactly ONE spawn despite three parallel connects.
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+
+    await strategy.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // C3: Post-close connect() refuses to respawn
+  // -------------------------------------------------------------------------
+
+  it("connect() after close() throws TUNNEL_FAILED without respawning", async () => {
+    // Scenario: close() races with an in-flight execute(). The
+    // paused execute() calls strategy.connect() after close() has
+    // torn down #process. Without the #closed flag, connect() would
+    // spawn a fresh kubectl — leaking a tunnel because the caller
+    // already believed teardown was complete.
+    mockSpawn.mockImplementation(() => new FakeChildProcess());
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, onConnect: () => void) => {
+        const sock = new FakeSocket();
+        setImmediate(onConnect);
+        return sock;
+      },
+    );
+
+    const strategy = new TunnelConnectionStrategy({
+      type: "tunnel",
+      portForwardReadyTimeout: 5,
+    });
+
+    await strategy.connect();
+    const spawnCountBefore = mockSpawn.mock.calls.length;
+    await strategy.close();
+
+    await expect(strategy.connect()).rejects.toMatchObject({
+      code: "TUNNEL_FAILED",
+      message: expect.stringContaining("closed"),
+    });
+    // Critical: no additional spawn after close().
+    expect(mockSpawn).toHaveBeenCalledTimes(spawnCountBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2: verifyConnection dead-tunnel branches
+// ---------------------------------------------------------------------------
+
+describe("TunnelConnectionStrategy.verifyConnection (dead-tunnel detection)", () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    mockCreateConnection.mockReset();
+    mockCreateServer.mockReset();
+    mockCreateServer.mockImplementation(() => makeFakeServer(23456));
+  });
+
+  it("throws TUNNEL_FAILED when #spawnError was captured after the initial handshake", async () => {
+    // The `error` listener inside connect() captures spawn errors
+    // into #spawnError even after connect() has resolved. A later
+    // verifyConnection() must surface the captured error.
+    let procRef: FakeChildProcess | null = null;
+    mockSpawn.mockImplementation(() => {
+      procRef = new FakeChildProcess();
+      return procRef;
+    });
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, onConnect: () => void) => {
+        const sock = new FakeSocket();
+        setImmediate(onConnect);
+        return sock;
+      },
+    );
+
+    const strategy = new TunnelConnectionStrategy({
+      type: "tunnel",
+      portForwardReadyTimeout: 5,
+    });
+    await strategy.connect();
+
+    // Now simulate a post-handshake spawn error (e.g. kubectl
+    // process received an invalid signal).
+    expect(procRef).not.toBeNull();
+    procRef!.emitError(new Error("post-handshake kubectl boom"));
+
+    await expect(strategy.verifyConnection()).rejects.toMatchObject({
+      code: "TUNNEL_FAILED",
+      message: expect.stringContaining("post-handshake kubectl boom"),
+    });
+  });
+
+  it("throws TUNNEL_FAILED when the subprocess exited after the initial handshake", async () => {
+    let procRef: FakeChildProcess | null = null;
+    mockSpawn.mockImplementation(() => {
+      procRef = new FakeChildProcess();
+      return procRef;
+    });
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, onConnect: () => void) => {
+        const sock = new FakeSocket();
+        setImmediate(onConnect);
+        return sock;
+      },
+    );
+
+    const strategy = new TunnelConnectionStrategy({
+      type: "tunnel",
+      portForwardReadyTimeout: 5,
+    });
+    await strategy.connect();
+
+    // Simulate the subprocess dying (pod evicted, k8s watch lost).
+    expect(procRef).not.toBeNull();
+    procRef!.emitExit(1, "lost connection to api-server");
+
+    await expect(strategy.verifyConnection()).rejects.toMatchObject({
+      code: "TUNNEL_FAILED",
+      message: expect.stringContaining("lost connection to api-server"),
+    });
+  });
+
+  it("throws TUNNEL_FAILED when the local port stops answering (half-open tunnel)", async () => {
+    // Process is alive but the underlying TCP forward is dead
+    // (common: k8s API watch lost, pod evicted, network partition).
+    // verifyConnection() probes #isPortReachable to detect.
+    let reachable = true;
+    mockSpawn.mockImplementation(() => new FakeChildProcess());
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, onConnect: () => void) => {
+        const sock = new FakeSocket();
+        if (reachable) {
+          setImmediate(onConnect);
+        } else {
+          setImmediate(() => sock.emit("error", new Error("ECONNREFUSED")));
+        }
+        return sock;
+      },
+    );
+
+    const strategy = new TunnelConnectionStrategy({
+      type: "tunnel",
+      portForwardReadyTimeout: 5,
+    });
+    await strategy.connect();
+
+    // Flip reachability to simulate the half-open case.
+    reachable = false;
+
+    await expect(strategy.verifyConnection()).rejects.toMatchObject({
+      code: "TUNNEL_FAILED",
+      message: expect.stringContaining("not reachable"),
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// routerNamespace / namespace backward compat (M6)
+// ---------------------------------------------------------------------------
+
+describe("TunnelConnectionStrategy routerNamespace fallback", () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    mockCreateConnection.mockReset();
+    mockCreateServer.mockReset();
+    mockCreateServer.mockImplementation(() => makeFakeServer(33333));
+    mockSpawn.mockImplementation(() => new FakeChildProcess());
+    mockCreateConnection.mockImplementation(
+      (_opts: unknown, onConnect: () => void) => {
+        const sock = new FakeSocket();
+        setImmediate(onConnect);
+        return sock;
+      },
+    );
+  });
+
+  it("prefers routerNamespace over the deprecated namespace alias", async () => {
+    const strategy = new TunnelConnectionStrategy({
+      type: "tunnel",
+      routerNamespace: "router-ns",
+      namespace: "ignored-ns",
+    });
+    await strategy.connect();
+    const args = mockSpawn.mock.calls[0]!;
+    expect(args[1]).toContain("router-ns");
+    expect(args[1]).not.toContain("ignored-ns");
+    await strategy.close();
+  });
+
+  it("falls back to the deprecated namespace field if routerNamespace is absent", async () => {
+    const strategy = new TunnelConnectionStrategy({
+      type: "tunnel",
+      namespace: "legacy-ns",
+    });
+    await strategy.connect();
+    const args = mockSpawn.mock.calls[0]!;
+    expect(args[1]).toContain("legacy-ns");
+    await strategy.close();
+  });
 });
 
 describe("createConnectionStrategy", () => {

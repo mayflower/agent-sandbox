@@ -288,9 +288,15 @@ describe("K8sClient", () => {
     });
 
     it("should silently ignore 404", async () => {
-      mockDeleteNamespacedCustomObject.mockRejectedValue({
-        response: { statusCode: 404 },
-      });
+      // @kubernetes/client-node v1.x throws `ApiException` with a
+      // flat `code: number` field (not `response.statusCode` as in
+      // v0.x). The previous mock shape matched v0 and the
+      // production code was checking v0's nested field, so every
+      // 404-idempotency path was quietly broken. Mock the real
+      // shape here.
+      mockDeleteNamespacedCustomObject.mockRejectedValue(
+        Object.assign(new Error("Not Found"), { code: 404 }),
+      );
 
       await expect(
         client.deleteSandboxClaim("gone", "default"),
@@ -318,12 +324,23 @@ describe("K8sClient", () => {
     });
 
     it("should return null for 404", async () => {
-      mockGetNamespacedCustomObject.mockRejectedValue({
-        response: { statusCode: 404 },
-      });
+      mockGetNamespacedCustomObject.mockRejectedValue(
+        Object.assign(new Error("Not Found"), { code: 404 }),
+      );
 
       const result = await client.getSandbox("gone", "default");
       expect(result).toBeNull();
+    });
+
+    it("should throw on non-404 errors (wraps as K8S_API_ERROR)", async () => {
+      // Make sure the v1.x shape detection doesn't silently swallow
+      // non-404 errors with a `code` field.
+      mockGetNamespacedCustomObject.mockRejectedValue(
+        Object.assign(new Error("Forbidden"), { code: 403 }),
+      );
+      await expect(
+        client.getSandbox("protected", "default"),
+      ).rejects.toMatchObject({ code: "K8S_API_ERROR" });
     });
   });
 
@@ -396,7 +413,7 @@ describe("K8sClient", () => {
       await expect(
         client.listSandboxClaims("default", { owner: "alice,env=prod" }),
       ).rejects.toMatchObject({
-        code: "K8S_API_ERROR",
+        code: "INVALID_ARGUMENT",
         message: expect.stringContaining("Invalid label value"),
       });
     });
@@ -405,7 +422,7 @@ describe("K8sClient", () => {
       await expect(
         client.listSandboxClaims("default", { tier: "a=b" }),
       ).rejects.toMatchObject({
-        code: "K8S_API_ERROR",
+        code: "INVALID_ARGUMENT",
         message: expect.stringContaining("Invalid label value"),
       });
     });
@@ -414,7 +431,7 @@ describe("K8sClient", () => {
       await expect(
         client.listSandboxClaims("default", { big: "x".repeat(64) }),
       ).rejects.toMatchObject({
-        code: "K8S_API_ERROR",
+        code: "INVALID_ARGUMENT",
       });
     });
 
@@ -448,7 +465,7 @@ describe("K8sClient", () => {
       await expect(
         client.listSandboxClaims("default", { "-badkey": "x" }),
       ).rejects.toMatchObject({
-        code: "K8S_API_ERROR",
+        code: "INVALID_ARGUMENT",
         message: expect.stringContaining("Invalid label key"),
       });
     });

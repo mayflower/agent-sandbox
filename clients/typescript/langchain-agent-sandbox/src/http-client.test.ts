@@ -235,10 +235,44 @@ describe("SandboxRouterClient", () => {
       const result = await client.healthzResult();
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        // healthCheck() returns response.ok (false) without throwing
-        // for non-2xx, so the result branch is the "false-without-throw"
-        // fallback at http-client.ts.
+        // healthCheck() now throws a typed HTTP_ERROR with the HTTP
+        // status + body snippet; healthzResult() catches and maps
+        // it to reason: "http-error" via the exhaustive switch.
         expect(result.reason).toBe("http-error");
+        expect(result.error.code).toBe("HTTP_ERROR");
+        expect(result.error.httpStatus).toBe(503);
+      }
+    });
+
+    it("should categorize an error code outside the explicit mapping as 'unknown'", async () => {
+      // Drive the "unknown" branch of the exhaustive switch by
+      // having the strategy reject with a typed error whose code
+      // is NOT in {CONNECTION_FAILED, TUNNEL_FAILED,
+      // SANDBOX_NOT_REACHABLE, COMMAND_TIMEOUT, HTTP_ERROR}. This
+      // pins the fallback and forces anyone adding a new error
+      // code to think about the healthz mapping.
+      const badStrategy = {
+        connect: vi.fn().mockResolvedValue("http://x:1"),
+        close: vi.fn().mockResolvedValue(undefined),
+        verifyConnection: vi
+          .fn()
+          .mockRejectedValue(
+            new K8sAgentSandboxError(
+              "bad call",
+              "INVALID_ARGUMENT",
+            ),
+          ),
+      };
+      const weirdClient = new SandboxRouterClient(
+        badStrategy as unknown as ConnectionStrategy,
+        "sb-1",
+        "default",
+      );
+      const result = await weirdClient.healthzResult();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("unknown");
+        expect(result.error.code).toBe("INVALID_ARGUMENT");
       }
     });
   });

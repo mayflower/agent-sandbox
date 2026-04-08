@@ -23,6 +23,27 @@ import * as k8s from "@kubernetes/client-node";
 import { K8sAgentSandboxError, type K8sAgentSandboxErrorCode } from "./types.js";
 
 // ---------------------------------------------------------------------------
+// @kubernetes/client-node v1.x ApiException shape
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the HTTP status code from a `@kubernetes/client-node` v1.x
+ * `ApiException`, which exposes the status on a flat `code: number`
+ * field (not `response.statusCode` as in v0.x — that v0 shape was
+ * silently accepted by the previous version of this file and every
+ * 404-idempotency path broke as a result).
+ *
+ * We detect the code via duck-typing on `{ code: number }` to avoid
+ * importing the class directly (the generated export lives at a
+ * version-dependent path and a direct import would couple us to a
+ * specific subpath layout that moves between minor releases).
+ */
+function getApiStatusCode(err: unknown): number | undefined {
+  const code = (err as { code?: unknown })?.code;
+  return typeof code === "number" ? code : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // CRD API constants
 // ---------------------------------------------------------------------------
 
@@ -109,7 +130,7 @@ function validateLabelKey(key: string): void {
   if (key.length === 0 || key.length > 253) {
     throw new K8sAgentSandboxError(
       `Invalid label key ${JSON.stringify(key)}: must be 1-253 characters`,
-      "K8S_API_ERROR",
+      "INVALID_ARGUMENT",
     );
   }
   const slashIndex = key.indexOf("/");
@@ -123,14 +144,14 @@ function validateLabelKey(key: string): void {
     if (prefix.length === 0 || prefix.length > 253 || !LABEL_KEY_PREFIX_RE.test(prefix)) {
       throw new K8sAgentSandboxError(
         `Invalid label key ${JSON.stringify(key)}: prefix must be a valid DNS subdomain`,
-        "K8S_API_ERROR",
+        "INVALID_ARGUMENT",
       );
     }
   }
   if (name.length === 0 || name.length > 63 || !LABEL_KEY_NAME_RE.test(name)) {
     throw new K8sAgentSandboxError(
       `Invalid label key ${JSON.stringify(key)}: name segment must match ${LABEL_KEY_NAME_RE}`,
-      "K8S_API_ERROR",
+      "INVALID_ARGUMENT",
     );
   }
 }
@@ -139,7 +160,7 @@ function validateLabelValue(key: string, value: string): void {
   if (value.length > 63 || !LABEL_VALUE_RE.test(value)) {
     throw new K8sAgentSandboxError(
       `Invalid label value for key ${JSON.stringify(key)}: ${JSON.stringify(value)} must match ${LABEL_VALUE_RE} (max 63 chars)`,
-      "K8S_API_ERROR",
+      "INVALID_ARGUMENT",
     );
   }
 }
@@ -147,7 +168,7 @@ function validateLabelValue(key: string, value: string): void {
 /**
  * Serialize a labels record into a Kubernetes `labelSelector` query
  * string, validating keys and values first. Throws
- * `K8sAgentSandboxError("K8S_API_ERROR", ...)` on any invalid entry
+ * `K8sAgentSandboxError("INVALID_ARGUMENT", ...)` on any invalid entry
  * rather than silently producing a malformed or over-broad selector.
  */
 function serializeLabelSelector(labels: Record<string, string>): string {
@@ -167,6 +188,14 @@ function serializeLabelSelector(labels: Record<string, string>): string {
 export class K8sClient {
   #customApi: k8s.CustomObjectsApi;
   #watch: k8s.Watch;
+  /**
+   * All in-flight watch AbortControllers. Tracked so `close()` can
+   * cancel them — without this, a `create()` that fails mid-watch
+   * leaves an HTTP/2 watch stream open against the API server until
+   * the Node process dies.
+   */
+  #activeWatches: Set<{ abort: () => void }> = new Set();
+  #closed: boolean = false;
 
   constructor(kubeConfig?: k8s.KubeConfig) {
     const kc = kubeConfig ?? new k8s.KubeConfig();
@@ -197,6 +226,17 @@ export class K8sClient {
     namespace: string,
     options?: { labels?: Record<string, string>; annotations?: Record<string, string> },
   ): Promise<void> {
+    // Validate labels client-side for symmetry with listSandboxClaims /
+    // deleteAll. Without this, a caller can create a claim with labels
+    // that pass K8s's own (loose) validation but fail our stricter
+    // regex — later making the same claim unreachable from the
+    // list/delete paths.
+    if (options?.labels) {
+      for (const [key, value] of Object.entries(options.labels)) {
+        validateLabelKey(key);
+        validateLabelValue(key, value);
+      }
+    }
     const metadata: Record<string, unknown> = {
       name,
       annotations: options?.annotations ?? {},
@@ -313,9 +353,7 @@ export class K8sClient {
         name,
       });
     } catch (err) {
-      const status = (err as { response?: { statusCode?: number } })?.response
-        ?.statusCode;
-      if (status !== 404) {
+      if (getApiStatusCode(err) !== 404) {
         throw new K8sAgentSandboxError(
           `Failed to delete SandboxClaim '${name}': ${err instanceof Error ? err.message : String(err)}`,
           "K8S_API_ERROR",
@@ -342,9 +380,7 @@ export class K8sClient {
       });
       return resp as Record<string, unknown>;
     } catch (err) {
-      const status = (err as { response?: { statusCode?: number } })?.response
-        ?.statusCode;
-      if (status === 404) return null;
+      if (getApiStatusCode(err) === 404) return null;
       throw new K8sAgentSandboxError(
         `Failed to get Sandbox '${name}': ${err instanceof Error ? err.message : String(err)}`,
         "K8S_API_ERROR",
@@ -431,10 +467,38 @@ export class K8sClient {
   // -------------------------------------------------------------------------
 
   /**
+   * Close the K8sClient and abort any in-flight watches.
+   *
+   * Safe to call multiple times. After close(), `#watchUntil` rejects
+   * immediately rather than starting a new watch — this prevents a
+   * caller from resurrecting torn-down state by calling
+   * `resolveSandboxName` post-close.
+   */
+  async close(): Promise<void> {
+    this.#closed = true;
+    for (const req of this.#activeWatches) {
+      try {
+        req.abort();
+      } catch {
+        // Best-effort: some abort implementations throw if the
+        // underlying stream has already ended. Individual abort
+        // failures must not prevent subsequent aborts from running.
+      }
+    }
+    this.#activeWatches.clear();
+  }
+
+  /**
    * Generic watch-until-condition helper that handles timeout, abort,
    * deletion, and stream-end scenarios in one place.
    */
   async #watchUntil<T>(opts: WatchUntilOptions<T>): Promise<T> {
+    if (this.#closed) {
+      throw new K8sAgentSandboxError(
+        "K8sClient is closed",
+        "K8S_API_ERROR",
+      );
+    }
     return new Promise<T>((resolve, reject) => {
       let watchReq: { abort: () => void } | undefined;
       let settled = false;
@@ -443,7 +507,10 @@ export class K8sClient {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
-          watchReq?.abort();
+          if (watchReq) {
+            this.#activeWatches.delete(watchReq);
+            watchReq.abort();
+          }
         }
       };
 
@@ -489,7 +556,25 @@ export class K8sClient {
           },
         )
         .then((req) => {
+          // If the event callback already settled the promise (common
+          // when the resource already matched at watch-start time),
+          // abort the controller immediately — otherwise it leaks an
+          // HTTP/2 watch stream against the API server until the Node
+          // process exits. The previous version assigned to `watchReq`
+          // unconditionally and relied on the already-elapsed
+          // `settle()` having captured the (still-undefined)
+          // controller, orphaning it forever.
+          if (settled) {
+            try {
+              req.abort();
+            } catch {
+              // abort() may throw if the stream already ended; safe
+              // to ignore because we're discarding the controller.
+            }
+            return;
+          }
           watchReq = req;
+          this.#activeWatches.add(req);
         })
         .catch((err) => {
           if (settled) return;

@@ -35,7 +35,9 @@ import { createConnectionStrategy } from "./connection.js";
 import { SandboxRouterClient } from "./http-client.js";
 import {
   K8sAgentSandboxError,
-  K8sBatchOperationError,
+  K8sFileDownloadBatchError,
+  K8sFileUploadBatchError,
+  type K8sAgentSandboxErrorCode,
   type K8sAgentSandboxOptions,
   type K8sAgentSandboxCreateOptions,
   type K8sConnectionConfig,
@@ -180,6 +182,12 @@ export class K8sAgentSandbox extends BaseSandbox {
    * for empty input or non-absolute paths.
    */
   static #normalizeAbsolutePath(value: string, optionName: string): string {
+    if (typeof value !== "string") {
+      throw new K8sAgentSandboxError(
+        `${optionName} must be a string, got: ${typeof value}`,
+        "INVALID_ARGUMENT",
+      );
+    }
     if (value === "") {
       throw new K8sAgentSandboxError(
         `${optionName} must be a non-empty absolute path`,
@@ -189,6 +197,19 @@ export class K8sAgentSandbox extends BaseSandbox {
     if (!value.startsWith("/")) {
       throw new K8sAgentSandboxError(
         `${optionName} must be an absolute path, got: ${value}`,
+        "INVALID_ARGUMENT",
+      );
+    }
+    // Reject NUL bytes and other ASCII control chars. NUL terminates
+    // C strings (every shell, every libc, every filesystem layer),
+    // so a caller-supplied path containing `\0` would be silently
+    // truncated at the first NUL when passed through `sh -c '...'` —
+    // an LLM writing to `/app/report\0attack.sh` would actually
+    // write to `/app/report` and receive `{error: null}`. Newlines
+    // and other control chars similarly corrupt shell escaping.
+    if (/[\x00-\x1f]/.test(value)) {
+      throw new K8sAgentSandboxError(
+        `${optionName} must not contain ASCII control characters (got: ${JSON.stringify(value)})`,
         "INVALID_ARGUMENT",
       );
     }
@@ -228,6 +249,18 @@ export class K8sAgentSandbox extends BaseSandbox {
     if (filePath === "") {
       throw new K8sAgentSandboxError(
         "filePath must not be empty",
+        "INVALID_ARGUMENT",
+      );
+    }
+    // Reject NUL bytes and other ASCII control chars for the same
+    // reason #normalizeAbsolutePath does — a caller-supplied path
+    // containing `\0` gets silently truncated at the first NUL by
+    // every shell/libc/filesystem layer, so `/app/report\0attack.sh`
+    // would really write `/app/report` while the per-file response
+    // claimed success.
+    if (/[\x00-\x1f]/.test(filePath)) {
+      throw new K8sAgentSandboxError(
+        `filePath must not contain ASCII control characters (got: ${JSON.stringify(filePath)})`,
         "INVALID_ARGUMENT",
       );
     }
@@ -334,17 +367,27 @@ export class K8sAgentSandbox extends BaseSandbox {
       );
     }
 
-    // healthCheck() triggers strategy.connect() internally via #request
+    // healthCheck() triggers strategy.connect() internally via
+    // #request and throws a typed K8sAgentSandboxError on any
+    // non-2xx response (carrying the HTTP status + body snippet) or
+    // on a transport failure. Preserve HTTP_ERROR (remote is alive
+    // but unhealthy) so callers can distinguish from the
+    // "tunnel/network is down" cases; rewrap anything else as
+    // SANDBOX_NOT_REACHABLE with the original as cause.
     try {
-      const ok = await this.#httpClient.healthCheck();
-      if (!ok) {
-        throw new K8sAgentSandboxError(
-          `Sandbox '${this.#sandboxId}' health check returned non-200`,
-          "SANDBOX_NOT_REACHABLE",
-        );
-      }
+      await this.#httpClient.healthCheck();
     } catch (err) {
-      if (err instanceof K8sAgentSandboxError) throw err;
+      if (err instanceof K8sAgentSandboxError) {
+        if (err.code === "HTTP_ERROR") {
+          throw new K8sAgentSandboxError(
+            `Sandbox '${this.#sandboxId}' is reachable but unhealthy: ${err.message}`,
+            "SANDBOX_NOT_REACHABLE",
+            err,
+            err.httpStatus,
+          );
+        }
+        throw err;
+      }
       throw new K8sAgentSandboxError(
         `Cannot reach sandbox '${this.#sandboxId}': ${err instanceof Error ? err.message : String(err)}`,
         "SANDBOX_NOT_REACHABLE",
@@ -385,13 +428,16 @@ export class K8sAgentSandbox extends BaseSandbox {
     this.#assertRunning("execute");
     const effectiveTimeout = options?.timeout ?? this.#defaultTimeout;
     const wrapped = `sh -c ${shellQuote(command)}`;
+    // Lift the signal out of the try block so the catch can inspect
+    // `signal.aborted` — the most reliable timeout detection across
+    // Node versions, since the `err.name` fluctuated from
+    // "AbortError" (Node 18) to "TimeoutError" (Node 20+).
+    const signal =
+      effectiveTimeout > 0
+        ? AbortSignal.timeout(effectiveTimeout * 1000)
+        : undefined;
 
     try {
-      const signal =
-        effectiveTimeout > 0
-          ? AbortSignal.timeout(effectiveTimeout * 1000)
-          : undefined;
-
       const result = await this.#httpClient.execute(wrapped, signal);
 
       const parts: string[] = [];
@@ -408,14 +454,21 @@ export class K8sAgentSandbox extends BaseSandbox {
       // Distinguish AbortSignal.timeout firing from other failures so
       // callers (or LLMs reading the error) can decide whether to retry
       // with a longer timeout vs. give up.
+      //
+      // Prefer checking whether the per-call signal was aborted
+      // (stable across Node versions) over matching `err.name`
+      // (changed from "AbortError" in Node 18 to "TimeoutError" in
+      // Node 20). Fall back to the name check for extra safety on
+      // older runtimes.
       const isTimeout =
-        err instanceof Error &&
-        (err.name === "TimeoutError" || err.name === "AbortError");
+        (signal !== undefined && signal.aborted) ||
+        (err instanceof Error &&
+          (err.name === "TimeoutError" || err.name === "AbortError"));
       if (isTimeout) {
         throw new K8sAgentSandboxError(
-          `Execute timed out after ${effectiveTimeout}s: ${err.message}`,
+          `Execute timed out after ${effectiveTimeout}s: ${err instanceof Error ? err.message : String(err)}`,
           "COMMAND_TIMEOUT",
-          err,
+          err instanceof Error ? err : undefined,
         );
       }
       throw new K8sAgentSandboxError(
@@ -440,6 +493,7 @@ export class K8sAgentSandbox extends BaseSandbox {
     files: Array<[string, Uint8Array]>,
   ): Promise<FileUploadResponse[]> {
     this.#assertRunning("upload files");
+    const runtimeWorkDir = this.#runtimeWorkDir;
     const uploadOne = async (
       callerPath: string,
       content: Uint8Array,
@@ -451,9 +505,41 @@ export class K8sAgentSandbox extends BaseSandbox {
       const b64 = toBase64(content);
       const dir = absolutePath.substring(0, absolutePath.lastIndexOf("/"));
 
-      const cmd = dir
-        ? `mkdir -p ${shellQuote(dir)} && printf '%s' ${shellQuote(b64)} | base64 -d > ${shellQuote(absolutePath)}`
-        : `printf '%s' ${shellQuote(b64)} | base64 -d > ${shellQuote(absolutePath)}`;
+      // LC_ALL=C forces locale-independent English stderr so our
+      // error-mapping substring matches below work under any
+      // container locale. Without this, a sandbox image running e.g.
+      // `LANG=de_DE.UTF-8` emits "Keine Berechtigung" instead of
+      // "permission denied" and every failure collapses to the
+      // `invalid_path` fallback.
+      //
+      // The symlink-escape guard (`case "$(realpath ...)" in`) checks
+      // that the parent directory's real path still starts with
+      // `runtimeWorkDir`. `downloadFiles` goes through the
+      // runtime's `/download` endpoint which enforces chroot via
+      // `os.path.realpath + commonpath` — but `uploadFiles` uses
+      // `sh -c` which bypasses that sanitizer. Without this guard,
+      // a pre-existing symlink inside /app (created by an earlier
+      // command, or left over from a prior sandbox session on a
+      // shared volume) would let upload write outside the chroot.
+      // We compute the parent's realpath before the write and
+      // reject if it escapes runtimeWorkDir, then let `mkdir -p`
+      // and `base64 -d` run normally.
+      const workDirPrefix = runtimeWorkDir === "/" ? "/" : runtimeWorkDir;
+      const guardedDir = dir || runtimeWorkDir;
+      const mkdirPart =
+        guardedDir === runtimeWorkDir
+          ? ""
+          : `mkdir -p ${shellQuote(guardedDir)} && `;
+      const cmd =
+        `LC_ALL=C sh -c ${shellQuote(
+          `${mkdirPart}` +
+            `real=$(realpath -m -- ${shellQuote(guardedDir)}) && ` +
+            `case "$real/" in ` +
+            `${shellQuote(workDirPrefix === "/" ? "/" : workDirPrefix + "/")}*) ;; ` +
+            `*) echo "symlink-escape: $real not under ${workDirPrefix}" >&2; exit 77 ;; ` +
+            `esac && ` +
+            `printf '%s' ${shellQuote(b64)} | base64 -d > ${shellQuote(absolutePath)}`,
+        )}`;
 
       const result = await this.execute(cmd);
 
@@ -469,7 +555,12 @@ export class K8sAgentSandbox extends BaseSandbox {
       // we map to the most accurate one for each detected case.
       const stderr = result.output.toLowerCase();
       let error: FileOperationError;
-      if (stderr.includes("permission denied") || stderr.includes("eacces")) {
+      // exit 77 is our custom symlink-escape marker from the wrapper
+      // above. Map it to `permission_denied` — the agent should
+      // treat it as "this path is off-limits", not as a retry target.
+      if (result.exitCode === 77 || stderr.includes("symlink-escape")) {
+        error = "permission_denied";
+      } else if (stderr.includes("permission denied") || stderr.includes("eacces")) {
         error = "permission_denied";
       } else if (stderr.includes("is a directory") || stderr.includes("eisdir")) {
         error = "is_directory";
@@ -537,8 +628,7 @@ export class K8sAgentSandbox extends BaseSandbox {
     });
 
     if (transportErrors.length > 0) {
-      throw K8sAgentSandbox.#buildBatchError(
-        "uploadFiles",
+      throw K8sAgentSandbox.#buildUploadBatchError(
         files.length,
         transportErrors,
         responses,
@@ -551,8 +641,8 @@ export class K8sAgentSandbox extends BaseSandbox {
   /**
    * Codes that abort an entire batch (transport / precondition)
    * rather than producing a per-file error response. These must be
-   * surfaced via a thrown `K8sBatchOperationError`, not flattened
-   * into the per-file `FileOperationError` enum:
+   * surfaced via a thrown batch error subclass, not flattened into
+   * the per-file `FileOperationError` enum:
    *
    * - Transport errors (`CONNECTION_FAILED`, `TUNNEL_FAILED`,
    *   `HTTP_ERROR`) abort because the network/router is broken; no
@@ -577,30 +667,59 @@ export class K8sAgentSandbox extends BaseSandbox {
   }
 
   /**
-   * Build a typed `K8sBatchOperationError` from collected transport
-   * errors plus the per-file response array. Used by both
-   * `uploadFiles` and `downloadFiles` so the partial-results
-   * preservation contract is identical for both.
-   *
-   * If multiple transport errors are present, all of them are kept
-   * in `transportErrors` so callers can inspect sibling failure modes
-   * (the previous version only kept the first, silently dropping
-   * mixed-code failures). The first error's code becomes the
-   * batch-level code so caller branching on `err.code` still works
-   * for the homogeneous case.
+   * Format the batch error message. Shared between upload and
+   * download batch errors so the wording stays consistent.
    */
-  static #buildBatchError<T>(
+  static #formatBatchMessage(
     operation: string,
     totalFiles: number,
-    transportErrors: K8sAgentSandboxError[],
-    partialResults: T[],
-  ): K8sBatchOperationError<T> {
+    transportErrors: readonly K8sAgentSandboxError[],
+  ): string {
     const primary = transportErrors[0]!;
-    return new K8sBatchOperationError<T>(
+    return (
       `${operation}: ${transportErrors.length}/${totalFiles} files hit fatal errors: ${primary.message}` +
-        (transportErrors.length > 1
-          ? ` (and ${transportErrors.length - 1} other error(s); see .transportErrors)`
-          : ""),
+      (transportErrors.length > 1
+        ? ` (and ${transportErrors.length - 1} other error(s); see .transportErrors)`
+        : "")
+    );
+  }
+
+  /**
+   * Build a `K8sFileUploadBatchError` from collected transport errors
+   * plus the per-file response array. The concrete subclass means
+   * callers get fully-typed `partialResults: readonly FileUploadResponse[]`
+   * on a plain `instanceof K8sFileUploadBatchError` check — no cast,
+   * no generic that erases at the catch boundary.
+   */
+  static #buildUploadBatchError(
+    totalFiles: number,
+    transportErrors: K8sAgentSandboxError[],
+    partialResults: FileUploadResponse[],
+  ): K8sFileUploadBatchError {
+    const primary = transportErrors[0]!;
+    return new K8sFileUploadBatchError(
+      K8sAgentSandbox.#formatBatchMessage("uploadFiles", totalFiles, transportErrors),
+      primary.code,
+      partialResults,
+      transportErrors,
+      primary,
+      primary.httpStatus,
+    );
+  }
+
+  /**
+   * Build a `K8sFileDownloadBatchError` from collected transport
+   * errors plus the per-file response array. See
+   * `#buildUploadBatchError` for the typed-subclass rationale.
+   */
+  static #buildDownloadBatchError(
+    totalFiles: number,
+    transportErrors: K8sAgentSandboxError[],
+    partialResults: FileDownloadResponse[],
+  ): K8sFileDownloadBatchError {
+    const primary = transportErrors[0]!;
+    return new K8sFileDownloadBatchError(
+      K8sAgentSandbox.#formatBatchMessage("downloadFiles", totalFiles, transportErrors),
       primary.code,
       partialResults,
       transportErrors,
@@ -688,8 +807,7 @@ export class K8sAgentSandbox extends BaseSandbox {
     });
 
     if (transportErrors.length > 0) {
-      throw K8sAgentSandbox.#buildBatchError(
-        "downloadFiles",
+      throw K8sAgentSandbox.#buildDownloadBatchError(
         paths.length,
         transportErrors,
         responses,
@@ -727,6 +845,24 @@ export class K8sAgentSandbox extends BaseSandbox {
 
     const errors: Error[] = [];
 
+    // Tear down the HTTP client (and its tunnel subprocess) BEFORE
+    // deleting the claim. Two reasons:
+    // 1. Closing the tunnel first cleanly terminates any in-flight
+    //    HTTP requests with a local CONNECTION_FAILED instead of an
+    //    ECONNRESET from the controller deleting the pod under them.
+    // 2. Resource ordering: we want the least-revocable resource
+    //    (subprocess) torn down before the external state (claim).
+    try {
+      await this.#httpClient.close();
+    } catch (err) {
+      const wrapped = err instanceof Error ? err : new Error(String(err));
+      if (throwOnError) {
+        errors.push(wrapped);
+      } else {
+        console.warn(`Failed to close HTTP client: ${wrapped.message}`);
+      }
+    }
+
     if (this.#deleteOnClose && this.#claimName && this.#k8sClient) {
       try {
         await this.#k8sClient.deleteSandboxClaim(
@@ -747,14 +883,19 @@ export class K8sAgentSandbox extends BaseSandbox {
       }
     }
 
-    try {
-      await this.#httpClient.close();
-    } catch (err) {
-      const wrapped = err instanceof Error ? err : new Error(String(err));
-      if (throwOnError) {
-        errors.push(wrapped);
-      } else {
-        console.warn(`Failed to close HTTP client: ${wrapped.message}`);
+    // Best-effort: tear down the K8sClient so any in-flight watches
+    // (e.g. from a lingering resolveSandboxName) release their
+    // HTTP/2 streams. Failures here are logged, not raised — close()
+    // is already handling the primary cleanup and we don't want to
+    // mask the real teardown error with a secondary aborted-watch
+    // complaint.
+    if (this.#k8sClient) {
+      try {
+        await this.#k8sClient.close();
+      } catch (err) {
+        console.warn(
+          `Failed to close K8sClient: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
@@ -775,10 +916,24 @@ export class K8sAgentSandbox extends BaseSandbox {
           only,
         );
       }
-      throw new AggregateError(
-        errors,
-        `K8sAgentSandbox.close failed with ${errors.length} errors`,
+      // Multiple errors: throw an AggregateError so every individual
+      // error's typed `.code`/`.httpStatus` is reachable via
+      // `.errors`. When at least one is typed, also promote the
+      // first typed error's code onto the AggregateError so callers
+      // doing a naive `err.code` check still get something useful
+      // for the common case.
+      const firstTyped = errors.find(
+        (e): e is K8sAgentSandboxError => e instanceof K8sAgentSandboxError,
       );
+      const agg = new AggregateError(
+        errors,
+        `K8sAgentSandbox.close failed with ${errors.length} errors` +
+          (firstTyped ? ` (primary: ${firstTyped.code})` : ""),
+      ) as AggregateError & { code?: K8sAgentSandboxErrorCode };
+      if (firstTyped) {
+        agg.code = firstTyped.code;
+      }
+      throw agg;
     }
   }
 
@@ -793,6 +948,15 @@ export class K8sAgentSandbox extends BaseSandbox {
    * "sandbox is unhealthy" apart from "we couldn't ask the question".
    */
   async healthz(): Promise<HealthzResult> {
+    // Require initialize() first. Without this gate, `healthz()` on a
+    // tunnel-mode sandbox would spawn the kubectl subprocess (via
+    // strategy.connect()) as a side effect — and calling it after
+    // `close()` would resurrect the tunnel, undoing the teardown.
+    // The only reason `healthz()` existed without the gate previously
+    // was so it could be used as a pre-init smoke test; that use is
+    // a false economy because the tunnel subprocess leaks if the
+    // caller then decides not to initialize.
+    this.#assertRunning("healthz");
     return this.#httpClient.healthzResult();
   }
 
@@ -842,7 +1006,7 @@ export class K8sAgentSandbox extends BaseSandbox {
     const deleteOnClose = options.deleteOnClose ?? true;
     const connectionConfig: K8sConnectionConfig = options.connectionConfig ?? {
       type: "tunnel",
-      namespace,
+      routerNamespace: namespace,
     };
 
     const k8sClient = new K8sClient();
@@ -932,9 +1096,14 @@ export class K8sAgentSandbox extends BaseSandbox {
       if (sandbox !== null) {
         try {
           await sandbox.close({ throwOnError: false });
-        } catch {
+        } catch (closeErr) {
           // close() with throwOnError:false should not throw, but
-          // fall through regardless.
+          // log diagnostic detail if it does. Falling through silently
+          // here was a round-4 finding — we'd lose both the original
+          // creation error AND the cleanup failure in the silent case.
+          console.warn(
+            `Cleanup close() during create() unwind failed unexpectedly: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+          );
         }
       }
       if (deleteOnClose) {
@@ -959,6 +1128,20 @@ export class K8sAgentSandbox extends BaseSandbox {
           `Sandbox creation failed; SandboxClaim '${claimName}' was left in namespace '${namespace}' ` +
             `because deleteOnClose=false. Manual cleanup: kubectl delete sandboxclaim ${claimName} -n ${namespace}`,
         );
+      }
+      // Release any in-flight k8s watches on the local k8sClient. If
+      // sandbox was constructed its close() already called
+      // k8sClient.close(), but for the sandbox===null path (claim
+      // create / resolveSandboxName / waitForSandboxReady failure)
+      // this is the only place it happens.
+      if (sandbox === null) {
+        try {
+          await k8sClient.close();
+        } catch (cleanupErr) {
+          console.warn(
+            `Failed to close K8sClient during create() unwind: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+          );
+        }
       }
       if (err instanceof K8sAgentSandboxError) throw err;
       throw new K8sAgentSandboxError(
@@ -988,15 +1171,31 @@ export class K8sAgentSandbox extends BaseSandbox {
     const resolveTimeout = options?.resolveTimeout ?? 30;
     const connectionConfig: K8sConnectionConfig = options?.connectionConfig ?? {
       type: "tunnel",
-      namespace,
+      routerNamespace: namespace,
     };
 
     const k8sClient = new K8sClient();
-    const sandboxId = await k8sClient.resolveSandboxName(
-      claimName,
-      namespace,
-      resolveTimeout,
-    );
+    let sandboxId: string;
+    try {
+      sandboxId = await k8sClient.resolveSandboxName(
+        claimName,
+        namespace,
+        resolveTimeout,
+      );
+    } catch (resolveErr) {
+      // Release the k8sClient (which may have an in-flight watch)
+      // before propagating. Without this, a resolveSandboxName
+      // failure (claim not found, RBAC denied) leaks an HTTP/2
+      // watch stream against the API server.
+      try {
+        await k8sClient.close();
+      } catch (cleanupErr) {
+        console.warn(
+          `Failed to close K8sClient during fromExisting() unwind: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        );
+      }
+      throw resolveErr;
+    }
 
     const sandbox = new K8sAgentSandbox(
       {
@@ -1023,9 +1222,13 @@ export class K8sAgentSandbox extends BaseSandbox {
     } catch (initErr) {
       try {
         await sandbox.close({ throwOnError: false });
-      } catch {
-        // close() with throwOnError:false should not throw, but be
-        // defensive — surface the original initErr regardless.
+      } catch (closeErr) {
+        // Log diagnostic detail rather than silently dropping the
+        // secondary failure. Round-4 finding: empty catch here
+        // would hide both the init error AND the close error.
+        console.warn(
+          `Cleanup close() during fromExisting() unwind failed unexpectedly: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+        );
       }
       throw initErr;
     }

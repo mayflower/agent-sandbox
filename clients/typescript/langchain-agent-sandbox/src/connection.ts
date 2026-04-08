@@ -130,6 +130,22 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
    */
   #exited: boolean = false;
   /**
+   * Set by `close()`. Once true, `connect()` refuses to spawn a new
+   * tunnel and rejects with TUNNEL_FAILED — prevents the
+   * "close() races with an in-flight execute()" resurrection case
+   * where a paused request's `connect()` call would resurrect the
+   * tunnel after the caller believed teardown was complete.
+   */
+  #closed: boolean = false;
+  /**
+   * In-flight `connect()` promise for concurrency memoization. Without
+   * this, two parallel `execute()` calls on a fresh sandbox both enter
+   * `connect()`, both spawn a kubectl subprocess, and the first
+   * subprocess becomes orphaned with no handle (last-write-wins on
+   * `#process`). Sharing a single in-flight promise fixes this.
+   */
+  #connectPromise: Promise<string> | null = null;
+  /**
    * Buffered stderr from the spawned process, capped at
    * `#STDERR_BUFFER_MAX` bytes. Collected via a `data` listener
    * (not `for await` of `process.stderr`) so we can inspect it from
@@ -144,11 +160,41 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
   static readonly #STDERR_BUFFER_MAX = 64 * 1024;
 
   constructor(config: K8sTunnelConnectionConfig) {
-    this.#namespace = config.namespace ?? "default";
+    // Prefer `routerNamespace`; fall back to the deprecated
+    // `namespace` alias; default to "default". Splitting these out
+    // makes it possible for the sandbox's own namespace (in
+    // `K8sAgentSandboxOptions.namespace`) to differ from the
+    // sandbox-router-svc namespace.
+    this.#namespace =
+      config.routerNamespace ?? config.namespace ?? "default";
     this.#portForwardReadyTimeout = config.portForwardReadyTimeout ?? 30;
   }
 
   async connect(): Promise<string> {
+    // Reject post-close — prevents the "close() races with in-flight
+    // execute()" resurrection case where a paused request's
+    // connect() call would respawn the kubectl subprocess after the
+    // caller believed teardown was complete, leaking a tunnel
+    // subprocess forever.
+    if (this.#closed) {
+      throw new K8sAgentSandboxError(
+        "Tunnel connection strategy is closed",
+        "TUNNEL_FAILED",
+      );
+    }
+    // Share a single in-flight connect() promise so concurrent
+    // callers don't race to spawn separate kubectl subprocesses.
+    if (this.#connectPromise) return this.#connectPromise;
+    this.#connectPromise = this.#doConnect().catch((err) => {
+      // On failure clear the memoized promise so a retry can try
+      // again with a fresh spawn.
+      this.#connectPromise = null;
+      throw err;
+    });
+    return this.#connectPromise;
+  }
+
+  async #doConnect(): Promise<string> {
     // Re-use existing connection if still alive AND port still reachable.
     // The exitCode check alone is insufficient: a tunnel can be up at
     // the process level but the underlying TCP forward can be dead
@@ -165,9 +211,10 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
       return this.#baseUrl;
     }
 
-    // Clean up any dead/stale process
+    // Clean up any dead/stale process. Do NOT set #closed — this is
+    // an internal cleanup, not a user-initiated close.
     if (this.#process) {
-      await this.close();
+      await this.#teardownProcess();
     }
 
     // Reset state for a fresh attempt
@@ -249,7 +296,7 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
       if (this.#spawnError !== null) {
         const capturedSpawnErr: Error = this.#spawnError;
         const capturedMessage = capturedSpawnErr.message;
-        await this.close();
+        await this.#teardownProcess();
         throw new K8sAgentSandboxError(
           `kubectl port-forward could not be spawned: ${capturedMessage}` +
             (capturedMessage.includes("ENOENT")
@@ -263,7 +310,7 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
       // Check if process died after spawning
       if (this.#exited || proc.exitCode !== null) {
         const stderr = this.#stderrBuffer.trim() || "(empty stderr)";
-        await this.close();
+        await this.#teardownProcess();
         throw new K8sAgentSandboxError(
           `kubectl port-forward crashed before becoming reachable: ${stderr}`,
           "TUNNEL_FAILED",
@@ -281,7 +328,7 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
     }
 
     const stderr = this.#stderrBuffer.trim();
-    await this.close();
+    await this.#teardownProcess();
     throw new K8sAgentSandboxError(
       `Failed to establish kubectl port-forward tunnel within ${this.#portForwardReadyTimeout}s` +
         (stderr ? `; stderr: ${stderr}` : ""),
@@ -290,43 +337,90 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
   }
 
   async close(): Promise<void> {
-    if (this.#process) {
+    this.#closed = true;
+    this.#connectPromise = null;
+    await this.#teardownProcess();
+  }
+
+  /**
+   * Tear down the current kubectl subprocess, if any. Distinct from
+   * the public `close()` — this does not set `#closed`, so internal
+   * cleanup during a reconnect attempt doesn't permanently disable
+   * the strategy.
+   *
+   * Throws `TUNNEL_FAILED` on non-ESRCH kill errors (e.g. EPERM from
+   * AppArmor/SELinux) and keeps `#process` set so a retry can finish
+   * the kill. The previous version logged via `console.warn` and
+   * nulled the handle in `finally`, leaking a zombie subprocess that
+   * no subsequent close() could reach.
+   */
+  async #teardownProcess(): Promise<void> {
+    if (!this.#process) return;
+    const proc = this.#process;
+    // Short-circuit: if the subprocess already exited, skip the
+    // 2000ms Promise.race and go straight to state reset. The
+    // previous unconditional wait added a mandatory 2s stall to
+    // every close() on a dead process.
+    const alreadyExited = this.#exited || proc.exitCode !== null;
+    let killError: unknown;
+    if (!alreadyExited) {
       try {
-        this.#process.kill("SIGTERM");
-        // Give it a moment to exit gracefully
+        proc.kill("SIGTERM");
+      } catch (err) {
+        killError = err;
+      }
+      if (killError === undefined) {
+        // Wait for graceful exit up to 2000ms. Use `once` so the
+        // listener self-removes; previous `on` variant attached a
+        // new listener per close() call and relied on
+        // `#process = null` in finally to GC it.
         await Promise.race([
           new Promise<void>((resolve) => {
-            this.#process?.on("exit", () => resolve());
+            proc.once("exit", () => resolve());
           }),
           sleep(2000),
         ]);
-        // Force kill if still alive
-        if (this.#process.exitCode === null) {
-          this.#process.kill("SIGKILL");
+        if (proc.exitCode === null && !this.#exited) {
+          try {
+            proc.kill("SIGKILL");
+          } catch (err) {
+            killError = err;
+          }
         }
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException)?.code;
-        if (code !== "ESRCH") {
-          console.warn(
-            `Unexpected error closing kubectl port-forward: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      } finally {
-        this.#process = null;
-        this.#baseUrl = null;
-        this.#localPort = null;
-        this.#exited = false;
-        this.#spawnError = null;
-        this.#stderrBuffer = "";
       }
     }
+
+    if (killError !== undefined) {
+      const code = (killError as NodeJS.ErrnoException)?.code;
+      if (code !== "ESRCH") {
+        // Non-ESRCH kill failure means the subprocess may still be
+        // alive. Do NOT null #process — a retry can finish the kill.
+        // Surface as a typed error so the caller isn't silently
+        // lied to about teardown success.
+        throw new K8sAgentSandboxError(
+          `Failed to kill kubectl port-forward subprocess (pid=${proc.pid}): ${killError instanceof Error ? killError.message : String(killError)}` +
+            ". The subprocess may still be running; retrying close() will attempt the kill again.",
+          "TUNNEL_FAILED",
+          killError instanceof Error ? killError : undefined,
+        );
+      }
+      // ESRCH: process is already gone. Fall through to state reset.
+    }
+
+    // Success path: clear all tunnel state.
+    this.#process = null;
+    this.#baseUrl = null;
+    this.#localPort = null;
+    this.#exited = false;
+    this.#spawnError = null;
+    this.#stderrBuffer = "";
   }
 
   async verifyConnection(): Promise<void> {
     // Spawn-time error captured by the `error` listener.
     const spawnErr: Error | null = this.#spawnError;
     if (spawnErr !== null) {
-      await this.close();
+      await this.#teardownProcess();
       throw new K8sAgentSandboxError(
         `kubectl port-forward subprocess errored: ${spawnErr.message}`,
         "TUNNEL_FAILED",
@@ -336,7 +430,7 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
     // Process died after the initial handshake.
     if (this.#process && (this.#exited || this.#process.exitCode !== null)) {
       const stderr = this.#stderrBuffer.trim() || "(empty stderr)";
-      await this.close();
+      await this.#teardownProcess();
       throw new K8sAgentSandboxError(
         `kubectl port-forward died: ${stderr}`,
         "TUNNEL_FAILED",
@@ -349,7 +443,7 @@ export class TunnelConnectionStrategy implements ConnectionStrategy {
     if (this.#process && this.#localPort !== null) {
       const reachable = await this.#isPortReachable(this.#localPort);
       if (!reachable) {
-        await this.close();
+        await this.#teardownProcess();
         throw new K8sAgentSandboxError(
           `kubectl port-forward is alive but the local port ${this.#localPort} is not reachable; tunnel will be re-established on next call`,
           "TUNNEL_FAILED",

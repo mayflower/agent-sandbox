@@ -19,11 +19,26 @@
  * package, including connection configuration, sandbox options, and error types.
  */
 
-import { type SandboxErrorCode, SandboxError } from "deepagents";
+import type {
+  FileDownloadResponse,
+  FileUploadResponse,
+  SandboxErrorCode,
+} from "deepagents";
+import { SandboxError } from "deepagents";
 
 // ---------------------------------------------------------------------------
 // Connection configuration (discriminated union)
 // ---------------------------------------------------------------------------
+
+/**
+ * Fields common to every connection config. Extracted from the three
+ * discriminants below so `serverPort` isn't declared three times with
+ * drift risk between the copies.
+ */
+interface K8sConnectionConfigBase {
+  /** Port the sandbox runtime listens on inside the pod. @default 8888 */
+  serverPort?: number;
+}
 
 /**
  * Connect directly to a sandbox-router at a known URL.
@@ -32,12 +47,10 @@ import { type SandboxErrorCode, SandboxError } from "deepagents";
  * service (e.g. via an ingress, load balancer, or local port-forward
  * you manage yourself).
  */
-export interface K8sDirectConnectionConfig {
+export interface K8sDirectConnectionConfig extends K8sConnectionConfigBase {
   type: "direct";
   /** Base URL of the sandbox-router, e.g. "http://localhost:8080". */
   baseUrl: string;
-  /** Port the sandbox runtime listens on inside the pod. @default 8888 */
-  serverPort?: number;
 }
 
 /**
@@ -46,7 +59,7 @@ export interface K8sDirectConnectionConfig {
  * The provider watches the Gateway until an external IP is assigned,
  * then uses that IP as the base URL.
  */
-export interface K8sGatewayConnectionConfig {
+export interface K8sGatewayConnectionConfig extends K8sConnectionConfigBase {
   type: "gateway";
   /** Name of the Gateway resource. */
   gatewayName: string;
@@ -54,8 +67,6 @@ export interface K8sGatewayConnectionConfig {
   gatewayNamespace?: string;
   /** Seconds to wait for the Gateway to receive an IP. @default 180 */
   gatewayReadyTimeout?: number;
-  /** Port the sandbox runtime listens on inside the pod. @default 8888 */
-  serverPort?: number;
 }
 
 /**
@@ -64,14 +75,27 @@ export interface K8sGatewayConnectionConfig {
  *
  * Best for local development against a remote or kind cluster.
  */
-export interface K8sTunnelConnectionConfig {
+export interface K8sTunnelConnectionConfig extends K8sConnectionConfigBase {
   type: "tunnel";
-  /** Kubernetes namespace where the sandbox-router-svc lives. @default "default" */
+  /**
+   * Kubernetes namespace where the `sandbox-router-svc` Service
+   * lives. Distinct from the sandbox's own namespace
+   * (`K8sAgentSandboxOptions.namespace`) — the router and the
+   * sandbox can live in different namespaces.
+   *
+   * @default "default"
+   */
+  routerNamespace?: string;
+  /**
+   * Deprecated alias for `routerNamespace`. Accepted for backward
+   * compatibility; prefer `routerNamespace`. If both are supplied,
+   * `routerNamespace` wins.
+   *
+   * @deprecated Use `routerNamespace` instead.
+   */
   namespace?: string;
   /** Seconds to wait for the port-forward to become ready. @default 30 */
   portForwardReadyTimeout?: number;
-  /** Port the sandbox runtime listens on inside the pod. @default 8888 */
-  serverPort?: number;
 }
 
 /**
@@ -180,6 +204,11 @@ export interface K8sAgentSandboxCreateOptions {
 /**
  * Error codes specific to the k8s-agent-sandbox provider.
  *
+ * Codes NOT listed here (`NOT_INITIALIZED`, `COMMAND_TIMEOUT`,
+ * `FILE_OPERATION_FAILED`, `ALREADY_INITIALIZED`, `COMMAND_FAILED`)
+ * come from the upstream `SandboxErrorCode` union and are carried
+ * transitively.
+ *
  * - `CONNECTION_FAILED` — generic transport-level connection failure
  * - `TUNNEL_FAILED` — `kubectl port-forward` subprocess failure (distinct
  *   from CONNECTION_FAILED because the remediation is different: check
@@ -191,10 +220,6 @@ export interface K8sAgentSandboxCreateOptions {
  *   violation, distinct from K8S_API_ERROR which is a server-side failure)
  * - `SANDBOX_CREATION_FAILED` — creation flow failed mid-way
  * - `SANDBOX_NOT_FOUND` — referenced sandbox doesn't exist
- * - `COMMAND_TIMEOUT` — execute() exceeded its timeout budget
- * - `NOT_INITIALIZED` — operation called before initialize() (or after close())
- * - `FILE_OPERATION_FAILED` — file upload/download failed for an
- *   identifiable reason (permission, missing parent, etc.)
  */
 export type K8sAgentSandboxErrorCode =
   | SandboxErrorCode
@@ -205,12 +230,7 @@ export type K8sAgentSandboxErrorCode =
   | "K8S_API_ERROR"
   | "INVALID_ARGUMENT"
   | "SANDBOX_CREATION_FAILED"
-  | "SANDBOX_NOT_FOUND"
-  | "COMMAND_TIMEOUT"
-  | "NOT_INITIALIZED"
-  | "FILE_OPERATION_FAILED";
-
-const K8S_SANDBOX_ERROR_SYMBOL = Symbol.for("k8s.agent.sandbox.error");
+  | "SANDBOX_NOT_FOUND";
 
 /**
  * Custom error class for k8s-agent-sandbox operations.
@@ -221,8 +241,6 @@ const K8S_SANDBOX_ERROR_SYMBOL = Symbol.for("k8s.agent.sandbox.error");
  * downloadFiles error mapping).
  */
 export class K8sAgentSandboxError extends SandboxError {
-  [K8S_SANDBOX_ERROR_SYMBOL] = true as const;
-
   override readonly name = "K8sAgentSandboxError";
 
   constructor(
@@ -234,47 +252,25 @@ export class K8sAgentSandboxError extends SandboxError {
     super(message, code as SandboxErrorCode, cause);
     Object.setPrototypeOf(this, K8sAgentSandboxError.prototype);
   }
-
-  static isInstance(error: unknown): error is K8sAgentSandboxError {
-    return (
-      typeof error === "object" &&
-      error !== null &&
-      (error as Record<symbol, unknown>)[K8S_SANDBOX_ERROR_SYMBOL] === true
-    );
-  }
 }
 
 /**
- * Subclass for batch file operations (uploadFiles / downloadFiles) that
- * partially failed. Carries the full per-file response array so callers
- * can recover the entries that DID succeed instead of losing the partial
- * state when a transport error aborts the batch.
+ * Shared base for batch file operation errors.
  *
- * Without this typed carrier, partial results would only be reachable
- * via a side-channel cast like `(err as any).partialResults`, which is
- * invisible to TypeScript and any caller that doesn't already know the
- * undocumented field name. The previous review flagged that anti-pattern
- * as silent data loss; this class fixes it by making the field
- * first-class on a dedicated subclass that callers can `instanceof`-check.
- *
- * The generic parameter `T` lets callers narrow to the right response
- * shape (`FileUploadResponse[]` for upload, `FileDownloadResponse[]`
- * for download) without a second runtime cast.
+ * The previous single-generic `K8sBatchOperationError<T>` design had a
+ * fatal ergonomics flaw: TypeScript generics don't survive `try/catch`
+ * boundaries, so every caller had to write `catch (e) { if (e
+ * instanceof K8sBatchOperationError) { (e as K8sBatchOperationError<Foo>)
+ * ... } }` — the exact side-channel cast the subclass was meant to
+ * eliminate. Splitting into two concrete subclasses
+ * (`K8sFileUploadBatchError` / `K8sFileDownloadBatchError`) lets each
+ * catch site use a plain `instanceof` check AND get fully-typed
+ * `partialResults` without any cast.
  */
-export class K8sBatchOperationError<T> extends K8sAgentSandboxError {
-  // `name` is intentionally inherited from K8sAgentSandboxError (a
-  // narrow string-literal type that TS can't widen). Use `instanceof
-  // K8sBatchOperationError` to distinguish at runtime.
-
+abstract class K8sBatchOperationErrorBase extends K8sAgentSandboxError {
   constructor(
     message: string,
     code: K8sAgentSandboxErrorCode,
-    /**
-     * The full per-file response array, index-aligned with the input.
-     * Successful entries have `error: null` and (for downloads)
-     * non-null `content`. Failed entries carry their error code.
-     */
-    public readonly partialResults: readonly T[],
     /**
      * All transport errors collected from the batch. The base class's
      * `cause` only holds the first one; this list preserves every
@@ -286,13 +282,95 @@ export class K8sBatchOperationError<T> extends K8sAgentSandboxError {
     httpStatus?: number,
   ) {
     super(message, code, cause, httpStatus);
-    Object.setPrototypeOf(this, K8sBatchOperationError.prototype);
+  }
+}
+
+/**
+ * Batch error thrown by {@link K8sAgentSandbox.uploadFiles} when one or
+ * more files hit a batch-fatal error (transport failure, precondition
+ * violation, etc.). Carries the full per-file response array so the
+ * caller can recover entries that DID succeed.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await sandbox.uploadFiles(files);
+ * } catch (err) {
+ *   if (err instanceof K8sFileUploadBatchError) {
+ *     // partialResults is typed as readonly FileUploadResponse[]
+ *     for (const r of err.partialResults) { ... }
+ *   }
+ * }
+ * ```
+ */
+export class K8sFileUploadBatchError extends K8sBatchOperationErrorBase {
+  // `name` is intentionally inherited from the base class —
+  // K8sAgentSandboxError pins `name` to a narrow string-literal type
+  // that TS won't let a subclass widen. Distinguish subclasses via
+  // `instanceof` rather than `err.name` at runtime.
+
+  constructor(
+    message: string,
+    code: K8sAgentSandboxErrorCode,
+    public readonly partialResults: readonly FileUploadResponse[],
+    transportErrors: readonly K8sAgentSandboxError[],
+    cause?: Error,
+    httpStatus?: number,
+  ) {
+    super(message, code, transportErrors, cause, httpStatus);
+    Object.setPrototypeOf(this, K8sFileUploadBatchError.prototype);
+  }
+}
+
+/**
+ * Batch error thrown by {@link K8sAgentSandbox.downloadFiles} when one
+ * or more files hit a batch-fatal error. Carries the full per-file
+ * response array so the caller can recover entries that DID succeed
+ * (each has a non-null `content` field).
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await sandbox.downloadFiles(paths);
+ * } catch (err) {
+ *   if (err instanceof K8sFileDownloadBatchError) {
+ *     // partialResults is typed as readonly FileDownloadResponse[]
+ *     const recovered = err.partialResults.filter((r) => r.content !== null);
+ *   }
+ * }
+ * ```
+ */
+export class K8sFileDownloadBatchError extends K8sBatchOperationErrorBase {
+  // `name` is intentionally inherited from the base class — see
+  // K8sFileUploadBatchError for the rationale.
+
+  constructor(
+    message: string,
+    code: K8sAgentSandboxErrorCode,
+    public readonly partialResults: readonly FileDownloadResponse[],
+    transportErrors: readonly K8sAgentSandboxError[],
+    cause?: Error,
+    httpStatus?: number,
+  ) {
+    super(message, code, transportErrors, cause, httpStatus);
+    Object.setPrototypeOf(this, K8sFileDownloadBatchError.prototype);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Health check result
 // ---------------------------------------------------------------------------
+
+/**
+ * Failure category for {@link HealthzResult}. Explicit list (not a
+ * fallback `"unknown"`) so `http-client.ts` can use an exhaustive
+ * `switch` — adding a new category forces every call site to update.
+ */
+export type HealthzFailureReason =
+  | "unreachable"
+  | "http-error"
+  | "timeout"
+  | "unknown";
 
 /**
  * Discriminated union returned by {@link K8sAgentSandbox.healthz}.
@@ -306,6 +384,6 @@ export type HealthzResult =
   | { ok: true }
   | {
       ok: false;
-      reason: "unreachable" | "http-error" | "timeout" | "unknown";
+      reason: HealthzFailureReason;
       error: K8sAgentSandboxError;
     };

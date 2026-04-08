@@ -79,6 +79,11 @@ export type {
   K8sConnectionConfig,
   K8sAgentSandboxErrorCode,
   HealthzResult,
+  HealthzFailureReason,
 } from "./types.js";
 
-export { K8sAgentSandboxError, K8sBatchOperationError } from "./types.js";
+export {
+  K8sAgentSandboxError,
+  K8sFileUploadBatchError,
+  K8sFileDownloadBatchError,
+} from "./types.js";

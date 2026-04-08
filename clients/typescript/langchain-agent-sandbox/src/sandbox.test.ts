@@ -14,7 +14,11 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { K8sAgentSandbox } from "./sandbox.js";
-import { K8sAgentSandboxError, K8sBatchOperationError } from "./types.js";
+import {
+  K8sAgentSandboxError,
+  K8sFileDownloadBatchError,
+  K8sFileUploadBatchError,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
@@ -74,7 +78,7 @@ describe("K8sAgentSandbox", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHealthzResult.mockResolvedValue({ ok: true });
-    mockHealthCheck.mockResolvedValue(true);
+    mockHealthCheck.mockResolvedValue(undefined);
     mockClose.mockResolvedValue(undefined);
 
     sandbox = new K8sAgentSandbox({
@@ -124,9 +128,36 @@ describe("K8sAgentSandbox", () => {
       );
     });
 
-    it("should throw if sandbox is not reachable", async () => {
-      mockHealthCheck.mockResolvedValue(false);
-      await expect(sandbox.initialize()).rejects.toThrow("health check returned non-200");
+    it("should throw SANDBOX_NOT_REACHABLE if health check returns HTTP error", async () => {
+      // healthCheck() now throws a typed HTTP_ERROR on non-2xx (no
+      // more bare boolean return). initialize() rewraps HTTP_ERROR
+      // as SANDBOX_NOT_REACHABLE so callers still see the
+      // "unreachable" signal, but the original HTTP status is
+      // preserved on the wrapped error's httpStatus field.
+      mockHealthCheck.mockRejectedValueOnce(
+        new K8sAgentSandboxError(
+          "Health check failed (HTTP 503): down",
+          "HTTP_ERROR",
+          undefined,
+          503,
+        ),
+      );
+      await expect(sandbox.initialize()).rejects.toMatchObject({
+        code: "SANDBOX_NOT_REACHABLE",
+        httpStatus: 503,
+      });
+    });
+
+    it("should propagate transport failures as SANDBOX_NOT_REACHABLE", async () => {
+      mockHealthCheck.mockRejectedValueOnce(
+        new K8sAgentSandboxError(
+          "connect ECONNREFUSED",
+          "CONNECTION_FAILED",
+        ),
+      );
+      await expect(sandbox.initialize()).rejects.toMatchObject({
+        code: "CONNECTION_FAILED",
+      });
     });
   });
 
@@ -235,11 +266,25 @@ describe("K8sAgentSandbox", () => {
       expect(responses[0]!.path).toBe("/app/test.txt");
       expect(responses[0]!.error).toBeNull();
 
-      // Verify execute was called with mkdir + base64 command
+      // Verify execute was called with the LC_ALL=C + symlink-guard
+      // wrapper around base64. `mkdir -p` is only emitted when the
+      // parent directory differs from runtimeWorkDir — for
+      // /app/test.txt under runtimeWorkDir=/app, the parent IS /app
+      // so mkdir is omitted (no subdirectory to create).
       const cmd = mockExecute.mock.calls[0]![0] as string;
       expect(cmd).toContain("sh -c ");
-      expect(cmd).toContain("mkdir -p");
+      expect(cmd).toContain("LC_ALL=C");
+      expect(cmd).toContain("realpath");
       expect(cmd).toContain("base64 -d");
+    });
+
+    it("should emit mkdir -p for nested subdirectories under rootDir", async () => {
+      const content = new TextEncoder().encode("x");
+      mockExecute.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
+      await sandbox.uploadFiles([["/app/nested/dir/file.txt", content]]);
+      const cmd = mockExecute.mock.calls[0]![0] as string;
+      expect(cmd).toContain("mkdir -p");
+      expect(cmd).toContain("/app/nested/dir");
     });
 
     it("should handle multiple files", async () => {
@@ -271,13 +316,11 @@ describe("K8sAgentSandbox", () => {
       const responses = await sandbox.uploadFiles([["test.txt", content]]);
 
       expect(responses[0]!.error).toBeNull();
-      // The wrapped cmd is `sh -c 'mkdir -p '\''/app'\'' && ... > '\''/app/test.txt'\'''`
-      // — single quotes are doubly-escaped through the sh -c wrapping
-      // and the inner shellQuote. Match on the path strings directly,
-      // which appear unmodified (the outer escape only affects the
-      // surrounding single quotes, not the path content).
+      // The wrapper no longer unconditionally emits mkdir -p — for
+      // a path whose parent equals runtimeWorkDir, the parent
+      // already exists, so no mkdir is needed. Just verify the
+      // virtualized path made it into the command.
       const cmd = mockExecute.mock.calls[0]![0] as string;
-      expect(cmd).toContain("mkdir -p");
       expect(cmd).toContain("/app/test.txt");
     });
 
@@ -408,6 +451,7 @@ describe("K8sAgentSandbox", () => {
     });
 
     it("should close the HTTP client", async () => {
+      await sandbox.initialize();
       await sandbox.close();
       expect(mockClose).toHaveBeenCalled();
     });
@@ -415,12 +459,14 @@ describe("K8sAgentSandbox", () => {
 
   describe("healthz", () => {
     it("should return ok=true when sandbox is healthy", async () => {
+      await sandbox.initialize();
       mockHealthzResult.mockResolvedValue({ ok: true });
       const result = await sandbox.healthz();
       expect(result.ok).toBe(true);
     });
 
     it("should return categorized failure when sandbox is unreachable", async () => {
+      await sandbox.initialize();
       const err = new K8sAgentSandboxError(
         "ECONNREFUSED",
         "CONNECTION_FAILED",
@@ -436,6 +482,218 @@ describe("K8sAgentSandbox", () => {
         expect(result.reason).toBe("unreachable");
         expect(result.error).toBe(err);
       }
+    });
+
+    it("throws NOT_INITIALIZED if called before initialize()", async () => {
+      // Round-4 fix: healthz() now requires initialization because
+      // calling it pre-init on a tunnel-mode sandbox would spawn the
+      // kubectl subprocess as a side effect and leak it if the
+      // caller never initializes. Calling it post-close() would
+      // likewise resurrect the tunnel.
+      await expect(sandbox.healthz()).rejects.toMatchObject({
+        code: "NOT_INITIALIZED",
+      });
+    });
+
+    it("throws NOT_INITIALIZED if called after close()", async () => {
+      await sandbox.initialize();
+      await sandbox.close();
+      await expect(sandbox.healthz()).rejects.toMatchObject({
+        code: "NOT_INITIALIZED",
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #assertRunning precondition checks (T1 from round-4 review)
+  // -------------------------------------------------------------------------
+
+  describe("#assertRunning precondition", () => {
+    it("execute throws NOT_INITIALIZED before initialize()", async () => {
+      await expect(sandbox.execute("echo hi")).rejects.toMatchObject({
+        code: "NOT_INITIALIZED",
+      });
+    });
+
+    it("execute throws NOT_INITIALIZED after close()", async () => {
+      await sandbox.initialize();
+      await sandbox.close();
+      await expect(sandbox.execute("echo hi")).rejects.toMatchObject({
+        code: "NOT_INITIALIZED",
+      });
+    });
+
+    it("uploadFiles throws NOT_INITIALIZED before initialize()", async () => {
+      const enc = new TextEncoder();
+      await expect(
+        sandbox.uploadFiles([["a.txt", enc.encode("a")]]),
+      ).rejects.toMatchObject({ code: "NOT_INITIALIZED" });
+    });
+
+    it("uploadFiles throws NOT_INITIALIZED after close()", async () => {
+      await sandbox.initialize();
+      await sandbox.close();
+      const enc = new TextEncoder();
+      await expect(
+        sandbox.uploadFiles([["a.txt", enc.encode("a")]]),
+      ).rejects.toMatchObject({ code: "NOT_INITIALIZED" });
+    });
+
+    it("downloadFiles throws NOT_INITIALIZED before initialize()", async () => {
+      await expect(sandbox.downloadFiles(["/app/a.txt"])).rejects.toMatchObject(
+        { code: "NOT_INITIALIZED" },
+      );
+    });
+
+    it("downloadFiles throws NOT_INITIALIZED after close()", async () => {
+      await sandbox.initialize();
+      await sandbox.close();
+      await expect(sandbox.downloadFiles(["/app/a.txt"])).rejects.toMatchObject(
+        { code: "NOT_INITIALIZED" },
+      );
+    });
+
+    it("NOT_INITIALIZED is thrown directly (not wrapped in a batch error) so callers can branch on it", async () => {
+      // #isBatchFatalCode lists NOT_INITIALIZED, but the assertion
+      // fires BEFORE the Promise.allSettled, so the throw bubbles
+      // as a plain K8sAgentSandboxError, not a batch error. This
+      // pins that contract — a refactor that moved the check
+      // inside the per-file lambda would silently change the
+      // thrown shape from K8sAgentSandboxError to K8sFileUploadBatchError,
+      // breaking callers that branch on `err.code`.
+      const enc = new TextEncoder();
+      let caught: unknown = null;
+      try {
+        await sandbox.uploadFiles([["a.txt", enc.encode("a")]]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(K8sAgentSandboxError);
+      expect(caught).not.toBeInstanceOf(K8sFileUploadBatchError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // NUL-byte / control-char path rejection (H5 from round-4 review)
+  // -------------------------------------------------------------------------
+
+  describe("path NUL/control-char rejection", () => {
+    beforeEach(async () => {
+      await sandbox.initialize();
+    });
+
+    it("uploadFiles rejects a path containing a NUL byte", async () => {
+      const enc = new TextEncoder();
+      let caught: unknown = null;
+      try {
+        await sandbox.uploadFiles([
+          ["/app/report\x00attack.sh", enc.encode("x")],
+        ]);
+      } catch (e) {
+        caught = e;
+      }
+      // INVALID_ARGUMENT is batch-fatal so it surfaces as a
+      // K8sFileUploadBatchError rather than a per-file invalid_path
+      // entry. That's the correct security boundary — the LLM must
+      // see this error, not silently treat the path as unwritable.
+      expect(caught).toBeInstanceOf(K8sFileUploadBatchError);
+      const err = caught as K8sFileUploadBatchError;
+      expect(err.code).toBe("INVALID_ARGUMENT");
+    });
+
+    it("downloadFiles rejects a path containing a NUL byte", async () => {
+      let caught: unknown = null;
+      try {
+        await sandbox.downloadFiles(["/app/report\x00attack.sh"]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(K8sFileDownloadBatchError);
+      const err = caught as K8sFileDownloadBatchError;
+      expect(err.code).toBe("INVALID_ARGUMENT");
+    });
+
+    it("rejects a path containing a newline", async () => {
+      const enc = new TextEncoder();
+      let caught: unknown = null;
+      try {
+        await sandbox.uploadFiles([
+          ["/app/foo\nbar.txt", enc.encode("x")],
+        ]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(K8sFileUploadBatchError);
+      expect((caught as K8sFileUploadBatchError).code).toBe(
+        "INVALID_ARGUMENT",
+      );
+    });
+
+    it("constructor rejects rootDir with a NUL byte", () => {
+      expect(() =>
+        new K8sAgentSandbox({
+          connectionConfig: { type: "direct", baseUrl: "http://x:8080" },
+          sandboxId: "sb-1",
+          rootDir: "/app\x00junk",
+        }),
+      ).toThrow(/control/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // rootDir: "/" edge case (C5 from round-4 review)
+  // -------------------------------------------------------------------------
+
+  describe("rootDir='/' construction and path handling", () => {
+    it("constructor accepts rootDir='/' and runtimeWorkDir='/'", () => {
+      expect(
+        () =>
+          new K8sAgentSandbox({
+            connectionConfig: { type: "direct", baseUrl: "http://x:8080" },
+            sandboxId: "sb-1",
+            rootDir: "/",
+            runtimeWorkDir: "/",
+          }),
+      ).not.toThrow();
+    });
+
+    it("uploadFiles with rootDir='/' virtualizes correctly without '//'", async () => {
+      const rootSandbox = new K8sAgentSandbox({
+        connectionConfig: { type: "direct", baseUrl: "http://x:8080" },
+        sandboxId: "sb-1",
+        rootDir: "/",
+        runtimeWorkDir: "/",
+      });
+      await rootSandbox.initialize();
+      mockExecute.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
+
+      const enc = new TextEncoder();
+      const results = await rootSandbox.uploadFiles([
+        ["/foo.txt", enc.encode("x")],
+      ]);
+      expect(results[0]!.error).toBeNull();
+      // Assert the shell command does NOT contain `//foo.txt`.
+      const cmd = mockExecute.mock.calls[0]![0] as string;
+      expect(cmd).not.toContain("//foo.txt");
+      expect(cmd).toContain("/foo.txt");
+    });
+
+    it("downloadFiles with runtimeWorkDir='/' strips the leading slash", async () => {
+      const rootSandbox = new K8sAgentSandbox({
+        connectionConfig: { type: "direct", baseUrl: "http://x:8080" },
+        sandboxId: "sb-1",
+        rootDir: "/",
+        runtimeWorkDir: "/",
+      });
+      await rootSandbox.initialize();
+      mockDownload.mockResolvedValue(new TextEncoder().encode("ok"));
+
+      await rootSandbox.downloadFiles(["/etc/hostname"]);
+      // The router expects a path relative to runtimeWorkDir; with
+      // runtimeWorkDir="/" that's the absolute path minus the
+      // leading slash.
+      const routerPath = mockDownload.mock.calls[0]![0] as string;
+      expect(routerPath).toBe("etc/hostname");
     });
   });
 
@@ -634,7 +892,7 @@ describe("K8sAgentSandbox", () => {
 
     it("rejects '..' segments that escape rootDir on upload", async () => {
       const content = new TextEncoder().encode("data");
-      // The throw bubbles up via the K8sBatchOperationError aggregation,
+      // The throw bubbles up via the K8sFileUploadBatchError aggregation,
       // not as a per-file invalid_path response. This pins the security
       // boundary: a path-traversal attempt MUST surface to the caller.
       await expect(
@@ -800,7 +1058,7 @@ describe("K8sAgentSandbox", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Partial-success preservation via K8sBatchOperationError
+  // Partial-success preservation via K8sFileUploadBatchError / K8sFileDownloadBatchError
   // -------------------------------------------------------------------------
 
   describe("partialResults on batch fatal error", () => {
@@ -827,21 +1085,29 @@ describe("K8sAgentSandbox", () => {
         caught = e;
       }
 
-      expect(caught).toBeInstanceOf(K8sBatchOperationError);
-      const err = caught as K8sBatchOperationError<unknown>;
+      expect(caught).toBeInstanceOf(K8sFileUploadBatchError);
+      // instanceof to base class still works — the subclass MUST
+      // preserve the prototype chain so callers who only check the
+      // base class still catch this error. A regression that broke
+      // the extends chain would silently make `catch (e) { if (e
+      // instanceof K8sAgentSandboxError) ... }` miss this case.
+      expect(caught).toBeInstanceOf(K8sAgentSandboxError);
+      const err = caught as K8sFileUploadBatchError;
       // Code is preserved from the underlying transport error.
       expect(err.code).toBe("TUNNEL_FAILED");
       // Partial results contain BOTH files — index-aligned with input.
       expect(err.partialResults).toHaveLength(2);
-      // The first file's response carries the success.
-      const partial = err.partialResults as Array<{
-        path: string;
-        error: string | null;
-      }>;
-      expect(partial[0]!.error).toBeNull();
-      expect(partial[0]!.path).toBe("a.txt");
+      // The first file's response carries the success. No cast
+      // needed because partialResults is typed as
+      // readonly FileUploadResponse[] on the concrete subclass.
+      expect(err.partialResults[0]!.error).toBeNull();
+      expect(err.partialResults[0]!.path).toBe("a.txt");
       // transportErrors collects every fatal error.
       expect(err.transportErrors).toHaveLength(1);
+      // err.code should match the primary transport error's code
+      // (the first one collected). Contract documented on
+      // #buildUploadBatchError.
+      expect(err.code).toBe(err.transportErrors[0]!.code);
     });
 
     it("uploadFiles aggregates multiple transport errors", async () => {
@@ -864,13 +1130,34 @@ describe("K8sAgentSandbox", () => {
         caught = e;
       }
 
-      expect(caught).toBeInstanceOf(K8sBatchOperationError);
-      const err = caught as K8sBatchOperationError<unknown>;
+      expect(caught).toBeInstanceOf(K8sFileUploadBatchError);
+      const err = caught as K8sFileUploadBatchError;
       expect(err.transportErrors).toHaveLength(2);
       // Both codes are preserved on the typed array.
       const codes = err.transportErrors.map((e) => e.code);
       expect(codes).toContain("TUNNEL_FAILED");
       expect(codes).toContain("CONNECTION_FAILED");
+    });
+
+    it("uploadFiles: httpStatus is preserved on the batch error", async () => {
+      mockExecute.mockRejectedValueOnce(
+        new K8sAgentSandboxError(
+          "HTTP 500",
+          "HTTP_ERROR",
+          undefined,
+          500,
+        ),
+      );
+      const enc = new TextEncoder();
+      let caught: unknown = null;
+      try {
+        await sandbox.uploadFiles([["a.txt", enc.encode("a")]]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(K8sFileUploadBatchError);
+      const err = caught as K8sFileUploadBatchError;
+      expect(err.httpStatus).toBe(500);
     });
 
     it("downloadFiles preserves successful entries on transport error", async () => {
@@ -887,16 +1174,35 @@ describe("K8sAgentSandbox", () => {
         caught = e;
       }
 
-      expect(caught).toBeInstanceOf(K8sBatchOperationError);
-      const err = caught as K8sBatchOperationError<unknown>;
+      expect(caught).toBeInstanceOf(K8sFileDownloadBatchError);
+      expect(caught).toBeInstanceOf(K8sAgentSandboxError);
+      const err = caught as K8sFileDownloadBatchError;
       expect(err.partialResults).toHaveLength(2);
-      const partial = err.partialResults as Array<{
-        path: string;
-        content: Uint8Array | null;
-        error: string | null;
-      }>;
-      expect(partial[0]!.error).toBeNull();
-      expect(partial[0]!.content).not.toBeNull();
+      // No cast: partialResults is typed as
+      // readonly FileDownloadResponse[] on the concrete subclass.
+      expect(err.partialResults[0]!.error).toBeNull();
+      expect(err.partialResults[0]!.content).not.toBeNull();
+      // Verify the actual content was preserved (not just "truthy").
+      // Catches regressions that replace the content with an empty
+      // placeholder during partial-results construction.
+      const content = err.partialResults[0]!.content;
+      expect(content).toBeInstanceOf(Uint8Array);
+      expect(new TextDecoder().decode(content!)).toBe("ok");
+    });
+
+    it("downloadFiles: upload and download batch errors are distinguishable via instanceof", async () => {
+      mockDownload.mockRejectedValueOnce(
+        new K8sAgentSandboxError("tunnel down", "TUNNEL_FAILED"),
+      );
+      let caught: unknown = null;
+      try {
+        await sandbox.downloadFiles(["/app/a.txt"]);
+      } catch (e) {
+        caught = e;
+      }
+      // Download errors must NOT match the upload batch error class.
+      expect(caught).toBeInstanceOf(K8sFileDownloadBatchError);
+      expect(caught).not.toBeInstanceOf(K8sFileUploadBatchError);
     });
   });
 
@@ -914,7 +1220,10 @@ describe("K8sAgentSandbox", () => {
           deleteOnClose: true,
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { deleteSandboxClaim: mockDeleteSandboxClaim } as any,
+        {
+          deleteSandboxClaim: mockDeleteSandboxClaim,
+          close: vi.fn().mockResolvedValue(undefined),
+        } as any,
       );
       mockDeleteSandboxClaim.mockRejectedValueOnce(
         new K8sAgentSandboxError("tunnel exploded", "TUNNEL_FAILED"),
@@ -932,7 +1241,7 @@ describe("K8sAgentSandbox", () => {
       expect((caught as K8sAgentSandboxError).code).toBe("TUNNEL_FAILED");
     });
 
-    it("aggregates multiple errors as AggregateError", async () => {
+    it("aggregates multiple errors as AggregateError with primary code exposed", async () => {
       const sandboxWithDelete = new K8sAgentSandbox(
         {
           connectionConfig: { type: "direct", baseUrl: "http://x:8080" },
@@ -941,12 +1250,17 @@ describe("K8sAgentSandbox", () => {
           deleteOnClose: true,
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { deleteSandboxClaim: mockDeleteSandboxClaim } as any,
+        {
+          deleteSandboxClaim: mockDeleteSandboxClaim,
+          close: vi.fn().mockResolvedValue(undefined),
+        } as any,
       );
       mockDeleteSandboxClaim.mockRejectedValueOnce(
         new K8sAgentSandboxError("delete blew up", "K8S_API_ERROR"),
       );
-      mockClose.mockRejectedValueOnce(new Error("http close blew up"));
+      mockClose.mockRejectedValueOnce(
+        new K8sAgentSandboxError("tunnel died", "TUNNEL_FAILED"),
+      );
 
       let caught: unknown = null;
       try {
@@ -955,8 +1269,23 @@ describe("K8sAgentSandbox", () => {
         caught = e;
       }
       expect(caught).toBeInstanceOf(AggregateError);
-      const ag = caught as AggregateError;
+      const ag = caught as AggregateError & { code?: string };
       expect(ag.errors).toHaveLength(2);
+      // Round-4 fix: the first typed error's code is exposed on the
+      // AggregateError so callers doing `err.code === "TUNNEL_FAILED"`
+      // still work for the common "primary failure, secondary
+      // cleanup" case. Cleanup order runs HTTP close first (see
+      // close() implementation), so TUNNEL_FAILED is the primary.
+      expect(ag.code).toBe("TUNNEL_FAILED");
+      // Every individual error is still reachable for callers that
+      // want to inspect all of them.
+      const codes = ag.errors
+        .filter((e: unknown): e is K8sAgentSandboxError =>
+          e instanceof K8sAgentSandboxError,
+        )
+        .map((e: K8sAgentSandboxError) => e.code);
+      expect(codes).toContain("K8S_API_ERROR");
+      expect(codes).toContain("TUNNEL_FAILED");
     });
 
     it("respects throwOnError:false by logging instead of throwing", async () => {
@@ -968,7 +1297,10 @@ describe("K8sAgentSandbox", () => {
           deleteOnClose: true,
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { deleteSandboxClaim: mockDeleteSandboxClaim } as any,
+        {
+          deleteSandboxClaim: mockDeleteSandboxClaim,
+          close: vi.fn().mockResolvedValue(undefined),
+        } as any,
       );
       mockDeleteSandboxClaim.mockRejectedValueOnce(new Error("boom"));
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -986,22 +1318,21 @@ describe("K8sAgentSandbox", () => {
 
   describe("create() with deleteOnClose:false leaves claim on failure", () => {
     it("does not call deleteSandboxClaim when creation fails and deleteOnClose is false", async () => {
-      // Force initialization failure: healthCheck rejects.
-      mockHealthCheck.mockRejectedValueOnce(new Error("not ready"));
-      mockHealthzResult.mockRejectedValueOnce(new Error("not ready"));
+      // Force initialization failure: healthCheck rejects with a
+      // typed CONNECTION_FAILED so initialize() re-throws verbatim
+      // without rewrapping as SANDBOX_NOT_REACHABLE.
+      mockHealthCheck.mockRejectedValueOnce(
+        new K8sAgentSandboxError("connect ECONNREFUSED", "CONNECTION_FAILED"),
+      );
       mockDeleteSandboxClaim.mockClear();
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      // initialize() throws SANDBOX_NOT_REACHABLE on health-check
-      // failure; the create() catch block preserves typed errors
-      // verbatim, so we expect SANDBOX_NOT_REACHABLE here, not the
-      // generic SANDBOX_CREATION_FAILED wrap.
       await expect(
         K8sAgentSandbox.create({
           template: "python-sandbox-template",
           deleteOnClose: false,
         }),
-      ).rejects.toMatchObject({ code: "SANDBOX_NOT_REACHABLE" });
+      ).rejects.toMatchObject({ code: "CONNECTION_FAILED" });
 
       // Critical: deleteOnClose:false means the claim must NOT be
       // auto-deleted on the failure path. The user explicitly opted
@@ -1011,6 +1342,77 @@ describe("K8sAgentSandbox", () => {
       // it manually.
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("deleteOnClose=false"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("does call deleteSandboxClaim when creation fails and deleteOnClose is true (default)", async () => {
+      mockHealthCheck.mockRejectedValueOnce(
+        new K8sAgentSandboxError("connect ECONNREFUSED", "CONNECTION_FAILED"),
+      );
+      mockDeleteSandboxClaim.mockClear();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(
+        K8sAgentSandbox.create({
+          template: "python-sandbox-template",
+          // deleteOnClose defaults to true here
+        }),
+      ).rejects.toMatchObject({ code: "CONNECTION_FAILED" });
+
+      // With deleteOnClose:true, the sandbox.close() path inside
+      // the create() catch clause deletes the claim as part of
+      // tearing down the tunnel subprocess.
+      expect(mockDeleteSandboxClaim).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // deleteAll failure aggregation (T7 from round-4 review)
+  // -------------------------------------------------------------------------
+
+  describe("deleteAll failure handling", () => {
+    it("throws a single K8sAgentSandboxError when exactly one claim fails", async () => {
+      mockListSandboxClaims.mockResolvedValueOnce(["claim-a"]);
+      mockDeleteSandboxClaim.mockRejectedValueOnce(
+        new K8sAgentSandboxError("K8s unreachable", "K8S_API_ERROR"),
+      );
+      await expect(
+        K8sAgentSandbox.deleteAll({ owner: "alice" }),
+      ).rejects.toMatchObject({ code: "K8S_API_ERROR" });
+    });
+
+    it("throws AggregateError when multiple claims fail", async () => {
+      mockListSandboxClaims.mockResolvedValueOnce(["claim-a", "claim-b"]);
+      mockDeleteSandboxClaim
+        .mockRejectedValueOnce(new Error("boom a"))
+        .mockRejectedValueOnce(new Error("boom b"));
+
+      let caught: unknown = null;
+      try {
+        await K8sAgentSandbox.deleteAll({ owner: "alice" });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(AggregateError);
+      expect((caught as AggregateError).errors).toHaveLength(2);
+    });
+
+    it("bestEffort:true logs failures and returns without throwing", async () => {
+      mockListSandboxClaims.mockResolvedValueOnce(["claim-a"]);
+      mockDeleteSandboxClaim.mockRejectedValueOnce(new Error("boom"));
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(
+        K8sAgentSandbox.deleteAll(
+          { owner: "alice" },
+          "default",
+          { bestEffort: true },
+        ),
+      ).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("claims failed to delete"),
       );
       warnSpy.mockRestore();
     });
