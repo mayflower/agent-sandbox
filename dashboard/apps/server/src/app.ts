@@ -28,8 +28,6 @@ export function buildApp(options: { provider: InventoryProvider; staticDir?: str
       decorateReply: false,
       wildcard: false,
     });
-
-    app.get("/", async (_request, reply) => reply.sendFile("index.html"));
   }
 
   app.get("/healthz", async () => ({ ok: true }));
