@@ -121,12 +121,15 @@ function AppContent() {
         isFetching={isFetching}
         controllerHealth={controllerHealthQuery.data ?? null}
       />
-      <div className="mx-auto max-w-7xl space-y-4 px-4 py-5 md:px-6">
+      <div className="mx-auto max-w-[96rem] space-y-3 px-4 py-4 md:px-6">
         <OverviewSection overview={liveOverview} />
 
-        <section aria-label="Problems and inventory" className="grid gap-4 xl:grid-cols-[minmax(320px,1fr)_2fr]">
+        <section
+          aria-label="Triage"
+          className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-[minmax(320px,1fr)_minmax(0,2fr)_minmax(320px,1fr)]"
+        >
           <ProblemsPanel problems={problemsQuery.data ?? []} />
-          <div aria-label="Inventory">
+          <div aria-label="Inventory" className="2xl:col-auto lg:col-span-2">
             <InventorySection
               capabilities={capabilitiesQuery.data!}
               sandboxes={sandboxesQuery.data!}
@@ -136,11 +139,8 @@ function AppContent() {
               events={eventsQuery.data ?? []}
             />
           </div>
-        </section>
-
-        <section aria-label="Capacity" className="grid gap-4 xl:grid-cols-[2fr_minmax(320px,1fr)]">
-          <WarmPoolMatrix warmPools={filteredWarmPools} />
-          <div className="space-y-4">
+          <div className="space-y-3">
+            <WarmPoolMatrix warmPools={filteredWarmPools} />
             <PendingClaimsByReason items={liveOverview.pendingClaimsByReason} />
             <EventsFeed events={eventsQuery.data ?? []} />
           </div>

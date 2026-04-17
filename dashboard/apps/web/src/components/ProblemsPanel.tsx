@@ -57,7 +57,7 @@ export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
             : `${errorCount} error${errorCount === 1 ? "" : "s"} · ${warningCount} warning${warningCount === 1 ? "" : "s"}`}
         </Badge>
       </div>
-      <div className="mt-4 space-y-3" aria-live="polite">
+      <div className="mt-3 max-h-[32rem] space-y-2 overflow-y-auto pr-1" aria-live="polite">
         {groups.length === 0 ? (
           <p className="text-sm text-slate-600">No matching problems.</p>
         ) : (

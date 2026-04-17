@@ -67,7 +67,7 @@ export function EventsFeed({ events }: { events: EventView[] }) {
       {recent.length === 0 ? (
         <p className="mt-3 text-sm text-slate-600">No recent events in the last 15 minutes.</p>
       ) : (
-        <ul className="mt-3 space-y-2">
+        <ul className="mt-3 max-h-[18rem] space-y-2 overflow-y-auto pr-1">
           {recent.map((event, index) => {
             const warning = event.type === "Warning";
             const target: SandboxTarget | null = SANDBOX_KINDS.has(event.resourceKind)

@@ -30,7 +30,7 @@ export function PendingClaimsByReason({ items }: { items: PendingClaimReason[] }
         <CardTitle>Pending claims</CardTitle>
         <Badge tone={total > 0 ? "warning" : "success"}>{total} pending</Badge>
       </div>
-      <ul className="mt-3 space-y-2">
+      <ul className="mt-3 max-h-[18rem] space-y-2 overflow-y-auto pr-1">
         {items.map((entry) => {
           const key = entry.reason;
           const open = expanded.has(key);
