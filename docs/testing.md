@@ -9,6 +9,19 @@ To run all unit tests:
 ```shell
 make test-unit
 ```
+
+`make test-unit` runs:
+
+- Go unit tests across the repo, excluding `test/e2e`
+- Python unit suites under `clients/python/agentic-sandbox-client`
+- dashboard workspace tests via `dashboard/npm run test:ci` when `dashboard/package.json` exists and dependencies are already installed
+
+Bootstrap dashboard dependencies once before using the repo-level unit target:
+
+```shell
+cd dashboard
+npm ci
+```
 ## Running the e2e tests (including benchmarks)
 To run all e2e tests:
 ```shell

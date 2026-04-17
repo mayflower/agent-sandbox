@@ -1,0 +1,20 @@
+{
+  "name": "@agent-sandbox/dashboard-shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build:workspace": "tsc -p tsconfig.json",
+    "test:workspace": "vitest",
+    "test:ci:workspace": "mkdir -p ../../test-results && vitest run --reporter=default --reporter=junit --outputFile.junit=../../test-results/shared-junit.xml"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -23,6 +23,8 @@ To move an image from staging to the production registry, a **promotion process*
 
 This step can be automated by running `make release-promote TAG=vX.Y.Z`. This calls [`dev/tools/tag-promote-images`](../dev/tools/tag-promote-images) script which handles the promotion process.
 
+If `k8s/dashboard.yaml` is present, `dev/tools/release` also emits a separate `release_assets/dashboard.yaml` and `dev/tools/tag-promote-images` can promote the `dashboard` image alongside the controller image.
+
 > [!IMPORTANT]
 > `make release-promote` by default also creates and pushes the git tag. You can use `SKIP_TAGGING=true` to skip tagging, or `ONLY_TAGGING=true` to only perform tagging. It requires `gh` and `gcloud` authentication.
 

@@ -59,6 +59,26 @@ PYTHON_TEST_SUITES = [
 ]
 
 
+def get_dashboard_dir(repo_root):
+    return os.path.join(repo_root, "dashboard")
+
+
+def get_dashboard_package_json(repo_root):
+    return os.path.join(get_dashboard_dir(repo_root), "package.json")
+
+
+def get_dashboard_package_lock(repo_root):
+    return os.path.join(get_dashboard_dir(repo_root), "package-lock.json")
+
+
+def get_dashboard_node_modules(repo_root):
+    return os.path.join(get_dashboard_dir(repo_root), "node_modules")
+
+
+def has_dashboard_workspace(repo_root):
+    return os.path.isfile(get_dashboard_package_json(repo_root))
+
+
 def run_go_tests(repo_root):
     """ runs Go unit tests and returns the exit code """
     go_list_cmd = ["go", "list", "./..."]
@@ -156,16 +176,40 @@ def run_python_tests(repo_root):
     return returncode
 
 
+def run_dashboard_tests(repo_root):
+    """Runs dashboard unit tests when the dashboard workspace is present."""
+    if not has_dashboard_workspace(repo_root):
+        print("Dashboard workspace not found, skipping dashboard unit tests.")
+        return 0
+
+    if shutil.which("npm") is None:
+        print("ERROR: dashboard/package.json exists but npm is not available in PATH.")
+        return 1
+
+    dashboard_dir = get_dashboard_dir(repo_root)
+    if not os.path.isdir(get_dashboard_node_modules(repo_root)):
+        lock_hint = "npm ci" if os.path.isfile(get_dashboard_package_lock(repo_root)) else "npm install"
+        print(f"ERROR: dashboard dependencies are missing. Run `cd {dashboard_dir} && {lock_hint}` before ./dev/tools/test-unit.")
+        return 1
+
+    print("\n=== Running dashboard unit tests ===")
+    test_result = subprocess.run(["npm", "run", "test:ci"], cwd=dashboard_dir)
+    return test_result.returncode
+
+
 def main():
     """ invokes unit tests and outputs junit results files """
     repo_root = utils.get_repo_root()
 
     go_rc = run_go_tests(repo_root)
     python_rc = run_python_tests(repo_root)
+    dashboard_rc = run_dashboard_tests(repo_root)
 
     if go_rc != 0:
         return go_rc
-    return python_rc
+    if python_rc != 0:
+        return python_rc
+    return dashboard_rc
 
 
 if __name__ == "__main__":

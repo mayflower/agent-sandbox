@@ -125,6 +125,10 @@ def check_install_manifest_drift(
     """
     globbed = {os.path.relpath(f, k8s_dir) for f in all_yaml_files}
     globbed.discard("extensions.controller.yaml")
+    # dashboard.yaml is published as a separate optional asset and is deliberately
+    # not part of the core+extensions all-in-one bundle, so it is not expected in
+    # kustomization.yaml.
+    globbed.discard("dashboard.yaml")
     listed = _kustomization_resource_paths(kustomization_path)
 
     missing = globbed - listed
@@ -137,6 +141,28 @@ def check_install_manifest_drift(
             print(f"   - {f}: listed in kustomization.yaml but not a k8s asset file")
         print("   Update k8s/kustomization.yaml so sandbox-with-extensions.yaml stays in sync.")
         sys.exit(1)
+
+
+def classify_release_yaml_files(all_yaml_files):
+    """Partition k8s manifests into core, extensions, and the optional dashboard.
+
+    dashboard.yaml is published as a standalone optional release asset, so it is
+    kept out of both the core sandbox.yaml and the extensions.yaml bundles.
+    """
+    manifest_files = []
+    extension_files = []
+    dashboard_files = []
+
+    for filename in sorted(all_yaml_files):
+        basename = os.path.basename(filename)
+        if basename.startswith("extensions"):
+            extension_files.append(filename)
+        elif basename == "dashboard.yaml":
+            dashboard_files.append(filename)
+        else:
+            manifest_files.append(filename)
+
+    return manifest_files, extension_files, dashboard_files
 
 
 def main():
@@ -174,9 +200,11 @@ def main():
             text,
         )
 
+    # Partition into core, extensions, and the optional standalone dashboard asset.
+    core_files, extension_files, dashboard_files = classify_release_yaml_files(all_yaml_files)
+
     # --- Generate sandbox.yaml (core only) ---
     print("INFO: Preparing core sandbox.yaml")
-    core_files = [f for f in all_yaml_files if "extensions" not in os.path.basename(f)]
     with open("release_assets/sandbox.yaml", "w") as outfile:
         for fname in sorted(core_files):
             with open(fname) as infile:
@@ -196,7 +224,6 @@ def main():
 
     # --- Generate extensions.yaml ---
     print("INFO: Preparing extensions.yaml")
-    extension_files = [f for f in all_yaml_files if "extensions" in os.path.basename(f)]
     with open("release_assets/extensions.yaml", "w") as outfile:
         for fname in sorted(extension_files):
             with open(fname) as infile:
@@ -247,6 +274,28 @@ def main():
         file.write(replace_image(result.stdout))
     print("INFO: Successfully created release_assets/sandbox-with-extensions.yaml")
 
+    # --- Generate dashboard.yaml (optional, separate asset) ---
+    dashboard_path = None
+    if dashboard_files:
+        print("INFO: Preparing dashboard.yaml")
+        dashboard_path = "release_assets/dashboard.yaml"
+        dashboard_image_url = f"registry.k8s.io/agent-sandbox/dashboard:{args.tag}"
+
+        with open(dashboard_path, "w") as outfile:
+            for fname in sorted(dashboard_files):
+                with open(fname) as infile:
+                    outfile.write(infile.read())
+                    outfile.write("---\n")
+
+        with open(dashboard_path, "r") as file:
+            filedata = file.read()
+
+        filedata = filedata.replace("dashboard:latest", dashboard_image_url)
+
+        with open(dashboard_path, "w") as file:
+            file.write(filedata)
+        print("INFO: Successfully created release_assets/dashboard.yaml")
+
     # --- Publish Draft Release ---
     if args.publish:
         print(f"INFO: Publishing draft release {tag} to GitHub...")
@@ -271,14 +320,19 @@ def main():
                 sys.exit(1)
 
             print(f"INFO: Draft release {tag} already exists; updating assets...")
-            run_command([
+            upload_cmd = [
                 "gh", "release", "upload", tag,
                 core_path,
                 extensions_path,
                 all_in_one_path,
+            ]
+            if dashboard_path and os.path.exists(dashboard_path):
+                upload_cmd.append(dashboard_path)
+            upload_cmd.extend([
                 "--clobber",
                 "--repo", "kubernetes-sigs/agent-sandbox",
             ])
+            run_command(upload_cmd)
         else:
             # Generate release notes using the external standalone script.
             notes_file = "release_assets/release_notes.md"
@@ -305,6 +359,9 @@ def main():
                 extensions_path,
                 all_in_one_path,
             ]
+
+            if dashboard_path and os.path.exists(dashboard_path):
+                cmd.append(dashboard_path)
 
             if notes_file:
                 cmd.extend(["--notes-file", notes_file])

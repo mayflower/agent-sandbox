@@ -1,0 +1,99 @@
+import type {
+  RawCondition,
+  RawEvent,
+  RawObjectMeta,
+  RawOwnerReference,
+  RawPod,
+  RawSandbox,
+  RawService,
+} from "./types.js";
+
+export const SANDBOX_POD_NAME_ANNOTATION = "agents.x-k8s.io/pod-name";
+export const SANDBOX_TEMPLATE_REF_ANNOTATION = "agents.x-k8s.io/sandbox-template-ref";
+export const CLAIM_UID_LABEL = "agents.x-k8s.io/claim-uid";
+
+export function getNamespace(metadata: RawObjectMeta): string {
+  return metadata.namespace ?? "default";
+}
+
+export function getAgeSeconds(timestamp: string | undefined, now: Date): number {
+  if (!timestamp) {
+    return 0;
+  }
+
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor((now.getTime() - parsed) / 1000));
+}
+
+export function findCondition(conditions: RawCondition[] | undefined, type: string): RawCondition | undefined {
+  return conditions?.find((condition) => condition.type === type);
+}
+
+export function isConditionTrue(conditions: RawCondition[] | undefined, type: string): boolean {
+  return findCondition(conditions, type)?.status === "True";
+}
+
+export function getControllerOwner(ownerReferences: RawOwnerReference[] | undefined): RawOwnerReference | undefined {
+  return ownerReferences?.find((owner) => owner.controller === true);
+}
+
+export function getPodName(sandbox: RawSandbox): string {
+  return sandbox.metadata.annotations?.[SANDBOX_POD_NAME_ANNOTATION] ?? sandbox.metadata.name;
+}
+
+export function getTemplateRefName(sandbox: RawSandbox): string | undefined {
+  return sandbox.metadata.annotations?.[SANDBOX_TEMPLATE_REF_ANNOTATION];
+}
+
+export function getPodIPs(pod: RawPod | undefined, sandbox: RawSandbox): string[] {
+  const statusIps = pod?.status?.podIPs?.map((entry) => entry.ip).filter(Boolean) as string[] | undefined;
+
+  if (statusIps && statusIps.length > 0) {
+    return statusIps;
+  }
+
+  if (pod?.status?.podIP) {
+    return [pod.status.podIP];
+  }
+
+  return sandbox.status?.podIPs ?? [];
+}
+
+export function getPodReady(pod: RawPod | undefined): boolean {
+  return isConditionTrue(pod?.status?.conditions, "Ready");
+}
+
+export function isExpired(shutdownTime: string | undefined, now: Date): boolean {
+  if (!shutdownTime) {
+    return false;
+  }
+
+  const parsed = Date.parse(shutdownTime);
+  if (Number.isNaN(parsed)) {
+    return false;
+  }
+
+  return parsed <= now.getTime();
+}
+
+export function getServiceForSandbox(services: RawService[], sandbox: RawSandbox): RawService | undefined {
+  const namespace = getNamespace(sandbox.metadata);
+
+  return services.find(
+    (service) =>
+      getNamespace(service.metadata) === namespace &&
+      service.metadata.name === (sandbox.status?.service ?? sandbox.metadata.name),
+  );
+}
+
+export function getEventTarget(event: RawEvent): { kind?: string; name?: string; namespace?: string } {
+  return event.regarding ?? event.involvedObject ?? {};
+}
+
+export function compareByTimestampAsc(a: { creationTimestamp?: string }, b: { creationTimestamp?: string }): number {
+  return Date.parse(a.creationTimestamp ?? "1970-01-01T00:00:00Z") - Date.parse(b.creationTimestamp ?? "1970-01-01T00:00:00Z");
+}
