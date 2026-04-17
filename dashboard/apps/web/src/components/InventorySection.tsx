@@ -1,4 +1,4 @@
-import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
+import { flexRender, getCoreRowModel, getPaginationRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import type {
   Capabilities,
   ClaimLiveView,
@@ -46,6 +46,8 @@ function matchesSearch(name: string, namespace: string, search: string): boolean
   return name.toLowerCase().includes(needle) || namespace.toLowerCase().includes(needle);
 }
 
+const PAGE_SIZE = 15;
+
 function DataTable<T>({
   columns,
   data,
@@ -63,50 +65,91 @@ function DataTable<T>({
     data,
     columns,
     getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    initialState: { pagination: { pageSize: PAGE_SIZE } },
   });
 
   if (data.length === 0) {
     return <p className="px-3 py-4 text-sm text-slate-600">{emptyMessage ?? "No matching resources."}</p>;
   }
 
+  const totalRows = data.length;
+  const pageIndex = table.getState().pagination.pageIndex;
+  const pageCount = table.getPageCount();
+  const rangeStart = pageIndex * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(rangeStart + PAGE_SIZE - 1, totalRows);
+
   return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full border-separate border-spacing-y-2">
-        <thead>
-          {table.getHeaderGroups().map((headerGroup) => (
-            <tr key={headerGroup.id}>
-              {headerGroup.headers.map((header) => (
-                <th key={header.id} className="px-3 py-2 text-left text-xs uppercase tracking-[0.2em] text-slate-500">
-                  {header.isPlaceholder ? null : String(header.column.columnDef.header)}
-                </th>
-              ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {table.getRowModel().rows.map((row) => {
-            const highlighted = rowHighlight?.(row.original) ?? false;
-            return (
-              <tr
-                key={row.id}
-                className={
-                  "cursor-pointer rounded-2xl shadow-sm transition hover:bg-white " +
-                  (highlighted ? "bg-rose-50/70 ring-1 ring-rose-200" : "bg-white/75")
-                }
-                onClick={() => onSelect(row.original)}
-              >
-                {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-3 py-3 text-sm text-slate-800">
-                    {cell.column.columnDef.cell
-                      ? flexRender(cell.column.columnDef.cell, cell.getContext())
-                      : String(cell.getValue() ?? "")}
-                  </td>
+    <div className="flex flex-col">
+      <div className="overflow-x-auto">
+        <table className="min-w-full border-collapse">
+          <thead>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <tr key={headerGroup.id}>
+                {headerGroup.headers.map((header) => (
+                  <th
+                    key={header.id}
+                    className="border-b border-slate-200 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-500"
+                  >
+                    {header.isPlaceholder ? null : String(header.column.columnDef.header)}
+                  </th>
                 ))}
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            ))}
+          </thead>
+          <tbody>
+            {table.getRowModel().rows.map((row) => {
+              const highlighted = rowHighlight?.(row.original) ?? false;
+              return (
+                <tr
+                  key={row.id}
+                  className={
+                    "cursor-pointer border-b border-slate-100 transition hover:bg-slate-50 " +
+                    (highlighted ? "bg-rose-50/70" : "")
+                  }
+                  onClick={() => onSelect(row.original)}
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id} className="px-3 py-2 text-sm text-slate-800">
+                      {cell.column.columnDef.cell
+                        ? flexRender(cell.column.columnDef.cell, cell.getContext())
+                        : String(cell.getValue() ?? "")}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {pageCount > 1 && (
+        <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2 text-xs text-slate-600">
+          <span className="tabular-nums">
+            {rangeStart}–{rangeEnd} of {totalRows}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => table.previousPage()}
+              disabled={!table.getCanPreviousPage()}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+            >
+              ‹ prev
+            </button>
+            <span className="px-2 tabular-nums">
+              {pageIndex + 1} / {pageCount}
+            </span>
+            <button
+              type="button"
+              onClick={() => table.nextPage()}
+              disabled={!table.getCanNextPage()}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+            >
+              next ›
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
