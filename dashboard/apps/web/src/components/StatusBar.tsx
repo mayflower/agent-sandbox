@@ -1,4 +1,4 @@
-import type { ProblemView } from "@agent-sandbox/dashboard-shared";
+import type { ControllerHealth, ProblemView } from "@agent-sandbox/dashboard-shared";
 import { useEffect, useState } from "react";
 
 import { useFilters } from "../lib/filters.js";
@@ -19,14 +19,17 @@ interface StatusBarProps {
   updatedAt: number;
   onRefresh: () => void;
   isFetching: boolean;
+  controllerHealth: ControllerHealth | null;
 }
 
-export function StatusBar({ problems, namespaces, updatedAt, onRefresh, isFetching }: StatusBarProps) {
+export function StatusBar({ problems, namespaces, updatedAt, onRefresh, isFetching, controllerHealth }: StatusBarProps) {
   const filters = useFilters();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const errorCount = problems.filter((problem) => problem.severity === "error").length;
   const warningCount = problems.filter((problem) => problem.severity === "warning").length;
-  const overall: "ok" | "warning" | "error" = errorCount > 0 ? "error" : warningCount > 0 ? "warning" : "ok";
+  const controllerDown = controllerHealth !== null && !controllerHealth.available;
+  const overall: "ok" | "warning" | "error" =
+    controllerDown || errorCount > 0 ? "error" : warningCount > 0 ? "warning" : "ok";
 
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -50,6 +53,11 @@ export function StatusBar({ problems, namespaces, updatedAt, onRefresh, isFetchi
           <Badge tone={overall === "ok" ? "success" : overall === "warning" ? "warning" : "danger"}>
             {overall === "ok" ? "all clear" : `${errorCount} error${errorCount === 1 ? "" : "s"} · ${warningCount} warning${warningCount === 1 ? "" : "s"}`}
           </Badge>
+          {controllerHealth && (
+            <Badge tone={controllerHealth.available ? "success" : "danger"}>
+              controller {controllerHealth.available ? "ok" : `down (${controllerHealth.ready}/${controllerHealth.desired})`}
+            </Badge>
+          )}
         </div>
 
         <div className="flex flex-1 flex-wrap items-center gap-2">

@@ -40,6 +40,9 @@ describe("kubernetes inventory provider", () => {
       async listTemplates() {
         return { supported: false, items: [] };
       },
+      async readControllerHealth() {
+        return null;
+      },
     };
 
     const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 0 });
@@ -88,6 +91,9 @@ describe("kubernetes inventory provider", () => {
           ],
         };
       },
+      async readControllerHealth() {
+        return { available: true, ready: 1, desired: 1 };
+      },
     };
 
     const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 0 });
@@ -123,6 +129,9 @@ describe("kubernetes inventory provider", () => {
       },
       async listTemplates() {
         return { supported: false, items: [] };
+      },
+      async readControllerHealth() {
+        return null;
       },
     };
 

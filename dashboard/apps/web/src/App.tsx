@@ -3,6 +3,7 @@ import { useMemo } from "react";
 
 import { api } from "./lib/api.js";
 import { FilterProvider } from "./lib/filters.js";
+import { EventsFeed } from "./components/EventsFeed.js";
 import { InventorySection } from "./components/InventorySection.js";
 import { OverviewSection } from "./components/OverviewSection.js";
 import { ProblemsPanel } from "./components/ProblemsPanel.js";
@@ -31,6 +32,12 @@ function AppContent() {
     queryKey: ["events"],
     queryFn: () => api.events(),
     enabled: capabilitiesQuery.data?.events === true,
+    refetchInterval: POLL_MS,
+  });
+  const controllerHealthQuery = useQuery({
+    queryKey: ["controller-health"],
+    queryFn: api.controllerHealth,
+    enabled: capabilitiesQuery.data?.controllerHealth === true,
     refetchInterval: POLL_MS,
   });
   const hasOptionalQueryError =
@@ -73,12 +80,16 @@ function AppContent() {
         updatedAt={updatedAt}
         onRefresh={refresh}
         isFetching={isFetching}
+        controllerHealth={controllerHealthQuery.data ?? null}
       />
       <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 md:px-8">
         <OverviewSection overview={overviewQuery.data!} warmPools={warmPoolsQuery.data ?? []} />
 
         <section aria-label="Problems and inventory" className="grid gap-5 xl:grid-cols-[1.05fr_2fr]">
-          <ProblemsPanel problems={problemsQuery.data ?? []} />
+          <div className="space-y-4">
+            <ProblemsPanel problems={problemsQuery.data ?? []} />
+            <EventsFeed events={eventsQuery.data ?? []} />
+          </div>
           <div aria-label="Inventory" className="space-y-4">
             <InventorySection
               capabilities={capabilitiesQuery.data!}

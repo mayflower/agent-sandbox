@@ -17,6 +17,7 @@ const baseCapabilities: Capabilities = {
   warmPools: true,
   templates: true,
   events: true,
+  controllerHealth: true,
 };
 
 export function createFixtureCapabilities(overrides: Partial<Capabilities> = {}): Capabilities {
@@ -462,5 +463,6 @@ export function createFixtureSnapshot(options?: { capabilities?: Partial<Capabil
     services: createServices(),
     pvcs: createPvcs(),
     events: createEvents(),
+    controllerHealth: { available: true, ready: 1, desired: 1 },
   };
 }

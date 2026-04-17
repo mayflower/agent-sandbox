@@ -179,6 +179,14 @@ export interface Capabilities {
   warmPools: boolean;
   templates: boolean;
   events: boolean;
+  controllerHealth: boolean;
+}
+
+export interface ControllerHealth {
+  available: boolean;
+  ready: number;
+  desired: number;
+  reason?: string;
 }
 
 export interface InventorySnapshot {
@@ -191,6 +199,7 @@ export interface InventorySnapshot {
   services: RawService[];
   pvcs: RawPersistentVolumeClaim[];
   events: RawEvent[];
+  controllerHealth: ControllerHealth | null;
 }
 
 export interface InventoryProvider {
