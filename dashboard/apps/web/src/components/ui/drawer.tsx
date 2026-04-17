@@ -13,11 +13,27 @@ export function Drawer({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${title} details`}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") onClose();
+      }}
+    >
       <aside className="h-full w-full max-w-xl overflow-y-auto border-l border-stone-200 bg-panel p-6 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-3">
           <h2 className="font-display text-2xl text-ink">{title}</h2>
-          <button className="rounded-full border border-stone-300 px-3 py-1 text-sm" onClick={onClose}>
+          <button
+            type="button"
+            className="rounded-full border border-stone-300 px-3 py-1 text-sm hover:bg-white"
+            onClick={onClose}
+            aria-label="Close detail panel"
+          >
             Close
           </button>
         </div>

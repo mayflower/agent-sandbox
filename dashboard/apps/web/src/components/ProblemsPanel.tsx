@@ -48,7 +48,7 @@ export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
   };
 
   return (
-    <Card>
+    <Card aria-label="Problems" role="region">
       <div className="flex items-center justify-between gap-3">
         <CardTitle>Problems</CardTitle>
         <Badge tone={filtered.length > 0 ? "warning" : "success"}>
@@ -57,7 +57,7 @@ export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
             : `${errorCount} error${errorCount === 1 ? "" : "s"} · ${warningCount} warning${warningCount === 1 ? "" : "s"}`}
         </Badge>
       </div>
-      <div className="mt-4 space-y-3">
+      <div className="mt-4 space-y-3" aria-live="polite">
         {groups.length === 0 ? (
           <p className="text-sm text-stone-600">No matching problems.</p>
         ) : (
