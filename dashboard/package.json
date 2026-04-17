@@ -3,14 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "npm run build:workspace --workspaces --if-present",
+    "build": "npm run build:workspace --workspace=@agent-sandbox/dashboard-shared && npm run build:workspace --workspaces --if-present",
     "test": "npm run test:workspace --workspaces --if-present",
     "test:ci": "npm run build && npm run test:ci:workspace --workspaces --if-present"
   }
