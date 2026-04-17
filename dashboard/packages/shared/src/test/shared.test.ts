@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildOverviewSnapshot, classifyProblems, createFixtureSnapshot, mapEvents, normalizeClaims, normalizeSandboxes, normalizeTemplates, normalizeWarmPools } from "../index.js";
+import { buildOverviewSnapshot, classifyProblems, createFixtureSnapshot, groupProblems, mapEvents, normalizeClaims, normalizeSandboxes, normalizeTemplates, normalizeWarmPools } from "../index.js";
 
 describe("shared dashboard domain helpers", () => {
   const now = new Date("2026-04-15T12:00:00Z");
@@ -62,6 +62,32 @@ describe("shared dashboard domain helpers", () => {
     });
     expect(events[0]?.resourceKind).toBe("SandboxClaim");
     expect(events[0]?.message).toContain("runtime");
+  });
+
+  it("groups problems by kind with highest severity first", () => {
+    const snapshot = createFixtureSnapshot();
+    const problems = classifyProblems(snapshot, now);
+    const groups = groupProblems(problems);
+
+    expect(groups.length).toBeGreaterThan(0);
+    for (const group of groups) {
+      expect(group.count).toBe(group.items.length);
+    }
+    const rank = { error: 0, warning: 1, info: 2 } as const;
+    for (let i = 1; i < groups.length; i += 1) {
+      expect(rank[groups[i - 1]!.severity] <= rank[groups[i]!.severity]).toBe(true);
+    }
+  });
+
+  it("builds phase breakdown and unmapped totals on overview", () => {
+    const snapshot = createFixtureSnapshot();
+    const overview = buildOverviewSnapshot(snapshot, now);
+
+    expect(overview.totals.totalSandboxes).toBe(5);
+    expect(overview.totals.unmappedSandboxes).toBeGreaterThanOrEqual(0);
+    expect(overview.phaseBreakdown.reduce((sum, entry) => sum + entry.count, 0)).toBe(overview.totals.totalSandboxes);
+    const readyEntry = overview.phaseBreakdown.find((entry) => entry.phase === "ready");
+    expect(readyEntry?.count).toBe(overview.totals.runtimeReadySandboxes);
   });
 
   it("keeps unknown event kinds and only uses controller owners marked true", () => {
