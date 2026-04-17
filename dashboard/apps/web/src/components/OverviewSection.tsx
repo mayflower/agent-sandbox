@@ -1,7 +1,9 @@
-import type { OverviewSnapshot, PhaseDatum, SandboxPhase } from "@agent-sandbox/dashboard-shared";
+import type { OverviewSnapshot, PhaseDatum, SandboxPhase, WarmPoolLiveView } from "@agent-sandbox/dashboard-shared";
 
 import { cn } from "../lib/utils.js";
 import { Card } from "./ui/card.js";
+import { PendingClaimsByReason } from "./PendingClaimsByReason.js";
+import { WarmPoolMatrix } from "./WarmPoolMatrix.js";
 
 const PHASE_CLASSES: Record<SandboxPhase, string> = {
   ready: "bg-emerald-500",
@@ -73,8 +75,14 @@ function PhaseStrip({ phases, total }: { phases: PhaseDatum[]; total: number }) 
   );
 }
 
-export function OverviewSection({ overview }: { overview: OverviewSnapshot }) {
-  const { totals, phaseBreakdown } = overview;
+export function OverviewSection({
+  overview,
+  warmPools,
+}: {
+  overview: OverviewSnapshot;
+  warmPools: WarmPoolLiveView[];
+}) {
+  const { totals, phaseBreakdown, pendingClaimsByReason } = overview;
   const warmPoolShortfall = totals.warmPoolDesiredTotal - totals.warmPoolReadyTotal;
   const runtimeMissingActive = totals.activeSandboxes - totals.runtimeReadySandboxes;
   const unmappedRatio = totals.totalSandboxes > 0 ? totals.unmappedSandboxes / totals.totalSandboxes : 0;
@@ -124,6 +132,11 @@ export function OverviewSection({ overview }: { overview: OverviewSnapshot }) {
           workloads to templates.
         </div>
       )}
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <WarmPoolMatrix warmPools={warmPools} />
+        <PendingClaimsByReason items={pendingClaimsByReason} />
+      </div>
     </div>
   );
 }

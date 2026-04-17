@@ -239,6 +239,7 @@ export interface OverviewSnapshot {
     unmappedSandboxes: number;
   };
   phaseBreakdown: PhaseDatum[];
+  pendingClaimsByReason: PendingClaimReason[];
   charts: {
     sandboxesByStatus: StatDatum[];
     sandboxesByTemplate: StatDatum[];
@@ -298,6 +299,8 @@ export interface WarmPoolLiveView {
   templateRef: string;
   desiredReplicas: number;
   readyReplicas: number;
+  creatingReplicas: number;
+  failedReplicas: number;
   fillRatio: number;
   updateStrategy: "Recreate" | "OnReplenish";
   memberSandboxes: Array<{
@@ -325,7 +328,16 @@ export type ProblemKind =
   | "claim-runtime-mismatch"
   | "warm-pool-underfilled"
   | "unresolved-template-link"
-  | "runtime-missing";
+  | "runtime-missing"
+  | "sandbox-stuck-starting"
+  | "sandbox-stuck-terminating"
+  | "claim-stuck-pending";
+
+export interface PendingClaimReason {
+  reason: string;
+  count: number;
+  claims: Array<{ namespace: string; name: string }>;
+}
 
 export interface ProblemView {
   kind: ProblemKind;

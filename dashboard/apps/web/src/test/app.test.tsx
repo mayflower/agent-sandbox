@@ -126,15 +126,15 @@ describe("dashboard web app", () => {
     renderApp();
 
     await screen.findByRole("tab", { name: "Claims" });
-    // Expand a problem group
-    const showButtons = screen.getAllByText("show");
-    fireEvent.click(showButtons[0]!);
-    // Click an item within the expanded group — selector: button whose text contains "open"
-    const openButtons = screen.getAllByText("open");
-    fireEvent.click(openButtons[0]!);
+    // Scope to the Problems card; its heading is "Problems"
+    const problemsCard = screen.getByText("Problems").closest("section");
+    if (!problemsCard) throw new Error("Problems card not found");
+    const showButton = problemsCard.querySelectorAll("button[aria-expanded='false']")[0] as HTMLElement;
+    fireEvent.click(showButton);
+    const openButton = problemsCard.querySelector("ul li button") as HTMLElement;
+    fireEvent.click(openButton);
 
     await waitFor(() => {
-      // Some drawer content appears
       expect(screen.getByText("Events")).toBeInTheDocument();
     });
   });

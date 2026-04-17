@@ -3,6 +3,7 @@ import { normalizeClaims, normalizeSandboxes, normalizeTemplates, normalizeWarmP
 import type {
   InventorySnapshot,
   OverviewSnapshot,
+  PendingClaimReason,
   PhaseDatum,
   SandboxLiveView,
   SandboxPhase,
@@ -120,6 +121,20 @@ export function buildOverviewSnapshot(snapshot: InventorySnapshot, now = new Dat
 
   const unmappedSandboxes = sandboxes.filter((sandbox) => !sandbox.templateRef).length;
 
+  const pendingByReasonMap = new Map<string, PendingClaimReason>();
+  for (const claim of claims) {
+    if (claim.state !== "pending") continue;
+    const reason = claim.rawReadyCondition?.reason?.trim() || "Unknown";
+    let entry = pendingByReasonMap.get(reason);
+    if (!entry) {
+      entry = { reason, count: 0, claims: [] };
+      pendingByReasonMap.set(reason, entry);
+    }
+    entry.count += 1;
+    entry.claims.push({ namespace: claim.namespace, name: claim.name });
+  }
+  const pendingClaimsByReason = [...pendingByReasonMap.values()].sort((left, right) => right.count - left.count);
+
   return {
     totals: {
       totalSandboxes: sandboxes.length,
@@ -136,6 +151,7 @@ export function buildOverviewSnapshot(snapshot: InventorySnapshot, now = new Dat
       unmappedSandboxes,
     },
     phaseBreakdown,
+    pendingClaimsByReason,
     charts: {
       sandboxesByStatus: toStatData(sandboxesByStatus),
       sandboxesByTemplate: toStatData(sandboxesByTemplate),
