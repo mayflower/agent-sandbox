@@ -188,6 +188,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
   private readonly cacheTtlMs: number;
   private readonly reader: ClusterReader;
   private cache?: { expiresAt: number; snapshot: InventorySnapshot };
+  private inflight?: Promise<InventorySnapshot>;
 
   constructor(reader: ClusterReader, options?: { cacheTtlMs?: number }) {
     this.reader = reader;
@@ -203,7 +204,17 @@ export class KubernetesInventoryProvider implements InventoryProvider {
     if (this.cache && this.cache.expiresAt > now) {
       return this.cache.snapshot;
     }
+    if (this.inflight) {
+      return this.inflight;
+    }
 
+    this.inflight = this.loadSnapshot(now).finally(() => {
+      this.inflight = undefined;
+    });
+    return this.inflight;
+  }
+
+  private async loadSnapshot(startedAt: number): Promise<InventorySnapshot> {
     const [sandboxes, pods, services, pvcs, events, claims, warmPools, templates, controllerHealth] = await Promise.all([
       this.reader.listSandboxes(),
       this.reader.listPods(),
@@ -237,7 +248,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
     };
 
     this.cache = {
-      expiresAt: now + this.cacheTtlMs,
+      expiresAt: startedAt + this.cacheTtlMs,
       snapshot,
     };
 
