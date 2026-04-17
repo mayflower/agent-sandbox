@@ -59,7 +59,7 @@ export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
       </div>
       <div className="mt-4 space-y-3" aria-live="polite">
         {groups.length === 0 ? (
-          <p className="text-sm text-stone-600">No matching problems.</p>
+          <p className="text-sm text-slate-600">No matching problems.</p>
         ) : (
           groups.map((group) => (
             <ProblemGroupCard
@@ -94,7 +94,7 @@ function ProblemGroupCard({
   onItemClick: (item: ProblemView) => void;
 }) {
   return (
-    <article className="rounded-2xl border border-stone-200 bg-white/70">
+    <article className="rounded-2xl border border-slate-200 bg-white/70">
       <button
         type="button"
         onClick={onToggle}
@@ -104,17 +104,17 @@ function ProblemGroupCard({
         <Badge tone={toneForSeverity(group.severity)}>{group.severity}</Badge>
         <div className="flex-1">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-sm font-semibold text-stone-800">{group.summary}</span>
-            <span className="text-xs text-stone-500">{expanded ? "hide" : "show"}</span>
+            <span className="text-sm font-semibold text-slate-800">{group.summary}</span>
+            <span className="text-xs text-slate-500">{expanded ? "hide" : "show"}</span>
           </div>
-          <p className="mt-0.5 text-xs text-stone-500">
+          <p className="mt-0.5 text-xs text-slate-500">
             {group.count} affected · {group.items[0]?.resourceKind}
           </p>
         </div>
         <Badge tone="neutral">{group.count}</Badge>
       </button>
       {expanded && (
-        <ul className="border-t border-stone-200 bg-canvas/40 px-3 py-2 text-sm text-stone-700">
+        <ul className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
           {group.items.map((item) => (
             <li key={`${item.namespace}/${item.resourceName}`}>
               <button
@@ -123,11 +123,11 @@ function ProblemGroupCard({
                 className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-1 text-left hover:bg-white"
               >
                 <span className="truncate">
-                  <span className="text-stone-500">{item.namespace}</span>
-                  <span className="mx-1 text-stone-400">/</span>
+                  <span className="text-slate-500">{item.namespace}</span>
+                  <span className="mx-1 text-slate-400">/</span>
                   <span>{item.resourceName}</span>
                 </span>
-                <span className="text-xs text-stone-400">open</span>
+                <span className="text-xs text-slate-400">open</span>
               </button>
             </li>
           ))}

@@ -1,6 +1,7 @@
 import { getAgeSeconds } from "./helpers.js";
 import { normalizeClaims, normalizeSandboxes, normalizeTemplates, normalizeWarmPools } from "./normalizers.js";
 import type {
+  ClaimLiveView,
   InventorySnapshot,
   OverviewSnapshot,
   PendingClaimReason,
@@ -9,6 +10,7 @@ import type {
   SandboxPhase,
   StatDatum,
   WarmPoolBarDatum,
+  WarmPoolLiveView,
 } from "./types.js";
 
 const PHASE_ORDER: SandboxPhase[] = [
@@ -77,6 +79,69 @@ function getShutdownBucket(shutdownTime: string | undefined, now: Date): string 
     return "15m-1h";
   }
   return "1h+";
+}
+
+export interface LiveOverview {
+  totals: OverviewSnapshot["totals"];
+  phaseBreakdown: PhaseDatum[];
+  pendingClaimsByReason: PendingClaimReason[];
+}
+
+export function computeLiveOverview(
+  sandboxes: SandboxLiveView[],
+  claims: ClaimLiveView[],
+  warmPools: WarmPoolLiveView[],
+): LiveOverview {
+  const phaseCounts = new Map<SandboxPhase, number>();
+  for (const sandbox of sandboxes) {
+    const phase = resolvePhase(sandbox);
+    phaseCounts.set(phase, (phaseCounts.get(phase) ?? 0) + 1);
+  }
+  const phaseBreakdown: PhaseDatum[] = PHASE_ORDER.filter((phase) => (phaseCounts.get(phase) ?? 0) > 0).map(
+    (phase) => ({ phase, label: PHASE_LABELS[phase], count: phaseCounts.get(phase) ?? 0 }),
+  );
+
+  const pendingByReasonMap = new Map<string, PendingClaimReason>();
+  for (const claim of claims) {
+    if (claim.state !== "pending") continue;
+    const reason = claim.rawReadyCondition?.reason?.trim() || "Unknown";
+    let entry = pendingByReasonMap.get(reason);
+    if (!entry) {
+      entry = { reason, count: 0, claims: [] };
+      pendingByReasonMap.set(reason, entry);
+    }
+    entry.count += 1;
+    entry.claims.push({ namespace: claim.namespace, name: claim.name });
+  }
+  const pendingClaimsByReason = [...pendingByReasonMap.values()].sort((left, right) => right.count - left.count);
+
+  const templatesInUse = new Set<string>();
+  for (const sandbox of sandboxes) {
+    if (sandbox.templateRef) templatesInUse.add(`${sandbox.namespace}/${sandbox.templateRef}`);
+  }
+  for (const claim of claims) {
+    if (claim.templateRef) templatesInUse.add(`${claim.namespace}/${claim.templateRef}`);
+  }
+  for (const pool of warmPools) {
+    if (pool.templateRef) templatesInUse.add(`${pool.namespace}/${pool.templateRef}`);
+  }
+
+  return {
+    totals: {
+      totalSandboxes: sandboxes.length,
+      activeSandboxes: sandboxes.filter((sandbox) => sandbox.objectState === "active").length,
+      runtimeReadySandboxes: sandboxes.filter((sandbox) => sandbox.effectiveReady).length,
+      runtimeMissingSandboxes: sandboxes.filter((sandbox) => sandbox.runtimeState === "missing").length,
+      pendingClaims: claims.filter((claim) => claim.state === "pending").length,
+      claimsWithReadinessMismatch: claims.filter((claim) => claim.readinessMismatch).length,
+      warmPoolReadyTotal: warmPools.reduce((sum, pool) => sum + pool.readyReplicas, 0),
+      warmPoolDesiredTotal: warmPools.reduce((sum, pool) => sum + pool.desiredReplicas, 0),
+      templatesInUse: templatesInUse.size,
+      unmappedSandboxes: sandboxes.filter((sandbox) => !sandbox.templateRef).length,
+    },
+    phaseBreakdown,
+    pendingClaimsByReason,
+  };
 }
 
 export function buildOverviewSnapshot(snapshot: InventorySnapshot, now = new Date()): OverviewSnapshot {

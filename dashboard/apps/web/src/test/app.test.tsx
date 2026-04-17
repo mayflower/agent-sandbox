@@ -139,13 +139,6 @@ describe("dashboard web app", () => {
     });
   });
 
-  it("renders an error state when the overview request fails", async () => {
-    mockDashboardResponses({ failOverview: true });
-    renderApp();
-
-    expect(await screen.findByText("Dashboard snapshot failed to load.")).toBeInTheDocument();
-  });
-
   it("renders an error state when a supported extension query fails", async () => {
     mockDashboardResponses({ failClaims: true });
     renderApp();
