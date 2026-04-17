@@ -31,6 +31,8 @@ For working with a remote cluster you can build and push the image to a containe
 ./dev/tools/push-images --image-prefix=<registry-url-with-trailing-slash>
 ```
 
+To include the optional live dashboard image as part of the same scan, add the `dashboard/` workspace and Dockerfile to the repo and rerun the same command. To push only the controller image, keep using `--controller-only`; that path intentionally excludes `dashboard/`.
+
 ### Regenerate CRD and RBAC
 
 Whenever any changes are made to the `api/` folder or the `controllers/` folder (kubebuilder tags), you may have to regenerate the CRDs and the RBAC manifests.
@@ -58,12 +60,20 @@ To run the controller on a local `kind` cluster, use the following command:
 make deploy-kind
 ```
 
+To include the optional read-only dashboard in the local deployment:
+
+```sh
+make deploy-kind DASHBOARD=true
+```
+
 This command will:
 
 1.  Create a `kind` cluster named `agent-sandbox` if it doesn't already exist.
 2.  Build the controller's container image.
 3.  Push the image to the `kind` cluster.
 4.  Deploy the controller to the `kind` cluster.
+
+When `DASHBOARD=true` is set, the deploy step also opts in to `k8s/dashboard.yaml`. The dashboard manifest is not applied by default.
 
 You can verify that the controller is running by checking the pods in the `agent-sandbox-system` namespace:
 
@@ -77,6 +87,38 @@ Make sure your kubectl context is set to the cluster you want to deploy to.
 
 ```sh
 ./dev/tools/deploy-to-kube --image-prefix=<registry-url-with-trailing-slash>
+```
+
+To deploy the optional dashboard as well:
+
+```sh
+./dev/tools/deploy-to-kube --image-prefix=<registry-url-with-trailing-slash> --dashboard
+```
+
+## Developing the Dashboard
+
+The optional dashboard lives in the dedicated [`dashboard/`](../dashboard/) workspace. It uses `npm` workspaces with:
+
+- `apps/web`: React and Vite frontend
+- `apps/server`: Fastify backend-for-frontend with fake and Kubernetes providers
+- `packages/shared`: shared contracts, fixtures, and aggregation logic
+
+Typical local workflow:
+
+```sh
+cd dashboard
+npm ci
+npm run build
+npm run test:ci
+```
+
+The repo-level `make test-unit` target reuses the existing dashboard install. It does not run `npm ci` for you, so bootstrap the workspace once before relying on the root test entrypoint.
+
+For local UI work without a cluster, run the server with the fake provider:
+
+```sh
+cd dashboard/apps/server
+DASHBOARD_FAKE_PROVIDER=true npm run dev
 ```
 
 ## Debugging the Controller
@@ -153,6 +195,8 @@ The configuration for these jobs is managed in the [kubernetes/test-infra](https
 The CI scripts are located in the [`dev/ci/`](../dev/ci/) directory.
 
 Note that presubmits are triggered on every push to the `main` branch, and postsubmits are triggered on every merge to the `main` branch.
+
+Dashboard repo-side test integration lives in `dev/tools/test-unit`, but any presubmit image or job changes needed to guarantee Node/npm availability still have to be made in `kubernetes/test-infra`.
 
 ### Pull Requests
 

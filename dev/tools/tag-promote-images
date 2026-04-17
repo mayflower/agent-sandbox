@@ -30,6 +30,7 @@ IMAGES_YAML_PATH = "registry.k8s.io/images/k8s-staging-agent-sandbox/images.yaml
 # List of images to promote
 IMAGES_TO_PROMOTE = [
     "agent-sandbox-controller",
+    "dashboard",
     "chrome-sandbox",
     "python-runtime-sandbox"
 ]

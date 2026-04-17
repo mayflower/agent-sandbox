@@ -110,7 +110,12 @@ kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/downl
 
 # Extensions (opt-in):
 kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${VERSION}/extensions.yaml
+
+# To install the optional read-only live dashboard:
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${VERSION}/dashboard.yaml
 ```
+
+The dashboard is a separate optional component. It serves a live, read-only cluster snapshot over a React UI and Fastify backend. It does not write to Kubernetes, store history, or depend on Prometheus.
 
 ### Go SDK
 
@@ -132,6 +137,8 @@ For detailed installation and usage instructions, please refer to the [Python SD
 ## Configuration
 
 For advanced scale and concurrency tuning (e.g., API QPS and worker counts), please see the [Configuration Guide](docs/configuration.md).
+
+For dashboard architecture, local development, and deployment details, see the [Dashboard Guide](docs/dashboard.md).
 
 ## Getting Started
 

@@ -39,3 +39,10 @@ hermes-sandbox-knowledge.md
 .ship
 .claude
 .vscode
+# Node.js / frontend build artifacts
+**/node_modules/
+**/.next/
+**/build/
+**/test-results/
+**/playwright-report/
+**/.turbo/

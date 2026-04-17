@@ -1,0 +1,5 @@
+node_modules
+apps/*/dist
+packages/*/dist
+test-results
+npm-debug.log*

@@ -1,0 +1,17 @@
+{
+  "name": "agent-sandbox-dashboard-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build:workspace --workspaces --if-present",
+    "test": "npm run test:workspace --workspaces --if-present",
+    "test:ci": "npm run build && npm run test:ci:workspace --workspaces --if-present"
+  }
+}

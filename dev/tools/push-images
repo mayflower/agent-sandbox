@@ -110,8 +110,9 @@ def main(args):
                      "temp", "tests", "tmp", ".venv"}
 
     if args.controller_only:
-        # TODO: Implement an explicit inclusion strategy for controller only Dockerfile.
-        excluded_dirs.update({"examples", "clients"})
+        # Controller-only mode also skips dashboard, alongside examples
+        # and clients, so the controller image is the only artifact.
+        excluded_dirs.update({"examples", "clients", "dashboard"})
 
     for root, dirs, files in os.walk(".", topdown=True):
         dirs[:] = [d for d in dirs if d not in excluded_dirs]

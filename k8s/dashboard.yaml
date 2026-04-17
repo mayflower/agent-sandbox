@@ -1,0 +1,136 @@
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: agent-sandbox-system
+
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: agent-sandbox-dashboard
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-dashboard
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-sandbox-dashboard
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  - pods
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - agents.x-k8s.io
+  resources:
+  - sandboxes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - extensions.agents.x-k8s.io
+  resources:
+  - sandboxclaims
+  - sandboxtemplates
+  - sandboxwarmpools
+  verbs:
+  - get
+  - list
+  - watch
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-sandbox-dashboard
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-dashboard
+  namespace: agent-sandbox-system
+roleRef:
+  kind: ClusterRole
+  name: agent-sandbox-dashboard
+  apiGroup: rbac.authorization.k8s.io
+
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: agent-sandbox-dashboard
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-dashboard
+spec:
+  selector:
+    app: agent-sandbox-dashboard
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+    protocol: TCP
+
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: agent-sandbox-dashboard
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-sandbox-dashboard
+  template:
+    metadata:
+      labels:
+        app: agent-sandbox-dashboard
+    spec:
+      serviceAccountName: agent-sandbox-dashboard
+      containers:
+      - name: agent-sandbox-dashboard
+        image: dashboard:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: HOST
+          value: 0.0.0.0
+        - name: PORT
+          value: "8080"
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
