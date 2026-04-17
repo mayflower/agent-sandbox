@@ -26,6 +26,7 @@ export function buildApp(options: { provider: InventoryProvider; staticDir?: str
       root: options.staticDir,
       prefix: "/",
       decorateReply: false,
+      wildcard: false,
     });
 
     app.get("/", async (_request, reply) => reply.sendFile("index.html"));
