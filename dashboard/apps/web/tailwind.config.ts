@@ -5,19 +5,21 @@ export default {
   theme: {
     extend: {
       colors: {
-        canvas: "#f4f1e8",
-        ink: "#1e1b16",
-        panel: "#fdf9ef",
+        canvas: "#f8fafc",
+        ink: "#0f172a",
+        panel: "#ffffff",
+        muted: "#64748b",
         accent: "#0f766e",
         alert: "#b45309",
         danger: "#b91c1c",
       },
       boxShadow: {
-        panel: "0 18px 40px rgba(30, 27, 22, 0.12)",
+        panel: "0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 0 rgba(15, 23, 42, 0.03)",
       },
       fontFamily: {
-        display: ["Georgia", "serif"],
+        display: ["ui-sans-serif", "system-ui", "sans-serif"],
         body: ["ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "monospace"],
       },
     },
   },

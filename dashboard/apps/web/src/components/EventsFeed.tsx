@@ -60,12 +60,12 @@ export function EventsFeed({ events }: { events: EventView[] }) {
     <Card>
       <div className="flex items-baseline justify-between gap-3">
         <CardTitle>Recent events</CardTitle>
-        <span className="text-xs text-stone-500 tabular-nums">
+        <span className="text-xs text-slate-500 tabular-nums">
           last 15m · {recent.length} shown
         </span>
       </div>
       {recent.length === 0 ? (
-        <p className="mt-3 text-sm text-stone-600">No recent events in the last 15 minutes.</p>
+        <p className="mt-3 text-sm text-slate-600">No recent events in the last 15 minutes.</p>
       ) : (
         <ul className="mt-3 space-y-2">
           {recent.map((event, index) => {
@@ -80,7 +80,7 @@ export function EventsFeed({ events }: { events: EventView[] }) {
             return (
               <li
                 key={`${event.resourceKind}-${event.namespace}-${event.resourceName}-${event.eventTime}-${index}`}
-                className="rounded-xl border border-stone-200 bg-white/70"
+                className="rounded-xl border border-slate-200 bg-white/70"
               >
                 <button
                   type="button"
@@ -90,12 +90,12 @@ export function EventsFeed({ events }: { events: EventView[] }) {
                 >
                   <Badge tone={warning ? "warning" : "info"}>{event.reason ?? event.type ?? "Event"}</Badge>
                   <div className="flex-1 min-w-0">
-                    <div className="truncate text-sm font-semibold text-stone-800">
+                    <div className="truncate text-sm font-semibold text-slate-800">
                       {event.resourceKind} {event.resourceName}
                     </div>
-                    <div className="truncate text-xs text-stone-600">{event.message}</div>
+                    <div className="truncate text-xs text-slate-600">{event.message}</div>
                   </div>
-                  <span className="shrink-0 text-xs tabular-nums text-stone-500">
+                  <span className="shrink-0 text-xs tabular-nums text-slate-500">
                     {formatRelative(eventTimestamp(event), now)}
                   </span>
                 </button>

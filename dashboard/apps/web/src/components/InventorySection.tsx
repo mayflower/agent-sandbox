@@ -66,7 +66,7 @@ function DataTable<T>({
   });
 
   if (data.length === 0) {
-    return <p className="px-3 py-4 text-sm text-stone-600">{emptyMessage ?? "No matching resources."}</p>;
+    return <p className="px-3 py-4 text-sm text-slate-600">{emptyMessage ?? "No matching resources."}</p>;
   }
 
   return (
@@ -76,7 +76,7 @@ function DataTable<T>({
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
               {headerGroup.headers.map((header) => (
-                <th key={header.id} className="px-3 py-2 text-left text-xs uppercase tracking-[0.2em] text-stone-500">
+                <th key={header.id} className="px-3 py-2 text-left text-xs uppercase tracking-[0.2em] text-slate-500">
                   {header.isPlaceholder ? null : String(header.column.columnDef.header)}
                 </th>
               ))}
@@ -96,7 +96,7 @@ function DataTable<T>({
                 onClick={() => onSelect(row.original)}
               >
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-3 py-3 text-sm text-stone-800">
+                  <td key={cell.id} className="px-3 py-3 text-sm text-slate-800">
                     {cell.column.columnDef.cell
                       ? flexRender(cell.column.columnDef.cell, cell.getContext())
                       : String(cell.getValue() ?? "")}
@@ -114,21 +114,21 @@ function DataTable<T>({
 function EventList({ events }: { events: EventView[] }) {
   return (
     <section>
-      <h3 className="mb-3 font-semibold text-stone-900">Events</h3>
+      <h3 className="mb-3 font-semibold text-slate-900">Events</h3>
       <div className="space-y-3">
         {events.length === 0 ? (
-          <p className="text-sm text-stone-600">No events for this object.</p>
+          <p className="text-sm text-slate-600">No events for this object.</p>
         ) : (
           events.map((event) => (
             <article
               key={`${event.resourceKind}-${event.resourceName}-${event.eventTime}-${event.reason}`}
-              className="rounded-2xl border border-stone-200 bg-white/70 p-4"
+              className="rounded-2xl border border-slate-200 bg-white/70 p-4"
             >
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={event.type === "Warning" ? "warning" : "info"}>{event.type ?? "Info"}</Badge>
-                <span className="font-semibold text-stone-800">{event.reason ?? "Event"}</span>
+                <span className="font-semibold text-slate-800">{event.reason ?? "Event"}</span>
               </div>
-              <p className="mt-2 text-sm text-stone-700">{event.message}</p>
+              <p className="mt-2 text-sm text-slate-700">{event.message}</p>
             </article>
           ))
         )}
@@ -300,7 +300,7 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-stone-900">Status</h3>
+            <h3 className="font-semibold text-slate-900">Status</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone={sandbox.effectiveReady ? "success" : "warning"}>
                 {sandbox.effectiveReady ? "ready" : "not ready"}
@@ -311,8 +311,8 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="font-semibold text-stone-900">Runtime</h3>
-            <p className="mt-2 text-sm text-stone-700">
+            <h3 className="font-semibold text-slate-900">Runtime</h3>
+            <p className="mt-2 text-sm text-slate-700">
               Pod {sandbox.podName ?? "missing"}
               {sandbox.podPhase ? ` (${sandbox.podPhase})` : ""} on {sandbox.nodeName ?? "n/a"}
               {" · "}
@@ -320,29 +320,29 @@ export function InventorySection({
             </p>
           </section>
           <section>
-            <h3 className="font-semibold text-stone-900">Owner</h3>
-            <p className="mt-2 text-sm text-stone-700">
+            <h3 className="font-semibold text-slate-900">Owner</h3>
+            <p className="mt-2 text-sm text-slate-700">
               {sandbox.ownerKind === "direct" && "Standalone (no claim / no warm pool)"}
               {sandbox.ownerKind === "claim" && `SandboxClaim ${sandbox.claimName ?? "?"}`}
               {sandbox.ownerKind === "warm-pool" && `SandboxWarmPool ${sandbox.warmPoolName ?? "?"}`}
             </p>
             {claim && (
-              <p className="mt-1 text-sm text-stone-600">
+              <p className="mt-1 text-sm text-slate-600">
                 Claim state: <Badge tone={claim.effectiveReady ? "success" : "warning"}>{claim.state}</Badge>
                 {claim.readinessMismatch && <span className="ml-2 text-xs text-amber-700">readiness mismatch</span>}
               </p>
             )}
           </section>
           <section>
-            <h3 className="font-semibold text-stone-900">Template &amp; storage</h3>
-            <p className="mt-2 text-sm text-stone-700">Template {sandbox.templateRef ?? "n/a"}.</p>
-            <p className="mt-1 text-sm text-stone-700">
+            <h3 className="font-semibold text-slate-900">Template &amp; storage</h3>
+            <p className="mt-2 text-sm text-slate-700">Template {sandbox.templateRef ?? "n/a"}.</p>
+            <p className="mt-1 text-sm text-slate-700">
               PVCs: {sandbox.pvcNames.length > 0 ? sandbox.pvcNames.join(", ") : "none attached"}
             </p>
           </section>
           <section>
-            <h3 className="font-semibold text-stone-900">kubectl</h3>
-            <pre className="mt-2 overflow-x-auto rounded-lg bg-stone-900 p-3 text-xs text-stone-100">
+            <h3 className="font-semibold text-slate-900">kubectl</h3>
+            <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100">
               kubectl describe sandbox {sandbox.name} -n {sandbox.namespace}
             </pre>
           </section>
@@ -360,7 +360,7 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-stone-900">Claim</h3>
+            <h3 className="font-semibold text-slate-900">Claim</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone={claim.readinessMismatch ? "warning" : "success"}>
                 {claim.readinessMismatch ? "mismatch" : "aligned"}
@@ -370,15 +370,15 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="font-semibold text-stone-900">Sandbox</h3>
-            <p className="mt-2 text-sm text-stone-700">
+            <h3 className="font-semibold text-slate-900">Sandbox</h3>
+            <p className="mt-2 text-sm text-slate-700">
               Sandbox {claim.sandboxName ?? "pending"} · IPs: {claim.podIPs.join(", ") || "none"}
             </p>
           </section>
           {claim.rawReadyCondition && (
             <section>
-              <h3 className="font-semibold text-stone-900">Ready condition</h3>
-              <p className="mt-2 text-sm text-stone-700">
+              <h3 className="font-semibold text-slate-900">Ready condition</h3>
+              <p className="mt-2 text-sm text-slate-700">
                 status={claim.rawReadyCondition.status}
                 {claim.rawReadyCondition.reason && ` · reason=${claim.rawReadyCondition.reason}`}
                 {claim.rawReadyCondition.message && ` · ${claim.rawReadyCondition.message}`}
@@ -399,20 +399,20 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-stone-900">Capacity</h3>
+            <h3 className="font-semibold text-slate-900">Capacity</h3>
             <div className="mt-2">
               <Progress value={warmPool.fillRatio} />
             </div>
-            <p className="mt-1 text-xs text-stone-600">
+            <p className="mt-1 text-xs text-slate-600">
               {warmPool.readyReplicas} ready of {warmPool.desiredReplicas} desired · template {warmPool.templateRef}
             </p>
           </section>
           <section>
-            <h3 className="font-semibold text-stone-900">Members</h3>
+            <h3 className="font-semibold text-slate-900">Members</h3>
             {warmPool.memberSandboxes.length === 0 ? (
-              <p className="mt-2 text-sm text-stone-600">No member sandboxes.</p>
+              <p className="mt-2 text-sm text-slate-600">No member sandboxes.</p>
             ) : (
-              <ul className="mt-2 space-y-1 text-sm text-stone-700">
+              <ul className="mt-2 space-y-1 text-sm text-slate-700">
                 {warmPool.memberSandboxes.map((member) => (
                   <li key={member.name} className="flex items-center gap-2">
                     <Badge tone={member.ready ? "success" : "warning"}>{member.ready ? "ready" : "not ready"}</Badge>
@@ -436,7 +436,7 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-stone-900">Posture</h3>
+            <h3 className="font-semibold text-slate-900">Posture</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone="info">{template.networkPolicyMode}</Badge>
               <Badge tone={template.automountServiceAccountTokenDefaultFalse ? "success" : "warning"}>
@@ -445,8 +445,8 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="font-semibold text-stone-900">Usage</h3>
-            <p className="mt-2 text-sm text-stone-700">
+            <h3 className="font-semibold text-slate-900">Usage</h3>
+            <p className="mt-2 text-sm text-slate-700">
               {template.activeSandboxes} sandbox{template.activeSandboxes === 1 ? "" : "es"} ·{" "}
               {template.activeClaims} claim{template.activeClaims === 1 ? "" : "s"} ·{" "}
               {template.activeWarmPools} warm pool{template.activeWarmPools === 1 ? "" : "s"}
@@ -496,7 +496,7 @@ export function InventorySection({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <CardTitle>Inventory</CardTitle>
-            <p className="mt-1 text-sm text-stone-600">
+            <p className="mt-1 text-sm text-slate-600">
               Search, filter, and drill into sandboxes, claims, warm pools, and templates.
             </p>
           </div>
@@ -506,9 +506,9 @@ export function InventorySection({
         {activeTab === "sandboxes" && (
           <div className="grid gap-3 md:grid-cols-3">
             <label className="text-sm">
-              <div className="mb-1 font-semibold text-stone-700">Owner kind</div>
+              <div className="mb-1 font-semibold text-slate-700">Owner kind</div>
               <select
-                className="w-full rounded-2xl border border-stone-300 px-3 py-2"
+                className="w-full rounded-2xl border border-slate-300 px-3 py-2"
                 value={ownerFilter}
                 onChange={(event) => setOwnerFilter(event.target.value)}
               >

@@ -37,19 +37,19 @@ export function StatusBar({ problems, namespaces, updatedAt, onRefresh, isFetchi
   }, []);
 
   return (
-    <header className="sticky top-0 z-20 border-b border-emerald-200/70 bg-canvas/95 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 md:px-8">
-        <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 md:px-6">
+        <div className="flex items-center gap-2">
           <span
             className={cn(
-              "h-2.5 w-2.5 rounded-full",
+              "h-2 w-2 rounded-full",
               overall === "ok" && "bg-emerald-500",
               overall === "warning" && "bg-amber-500",
               overall === "error" && "bg-rose-500",
             )}
             aria-hidden
           />
-          <h1 className="font-display text-xl text-ink">Agent Sandbox</h1>
+          <h1 className="text-sm font-semibold text-slate-900">Agent Sandbox</h1>
           <Badge tone={overall === "ok" ? "success" : overall === "warning" ? "warning" : "danger"}>
             {overall === "ok" ? "all clear" : `${errorCount} error${errorCount === 1 ? "" : "s"} · ${warningCount} warning${warningCount === 1 ? "" : "s"}`}
           </Badge>
@@ -66,13 +66,13 @@ export function StatusBar({ problems, namespaces, updatedAt, onRefresh, isFetchi
             placeholder="search name…"
             value={filters.search}
             onChange={(event) => filters.setSearch(event.target.value)}
-            className="min-w-[10rem] flex-1 rounded-full border border-stone-300 bg-white/80 px-4 py-1.5 text-sm text-ink placeholder:text-stone-400 focus:border-accent focus:outline-none"
+            className="min-w-[10rem] flex-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-accent focus:outline-none"
             aria-label="Search resources by name"
           />
           <select
             value={filters.namespace}
             onChange={(event) => filters.setNamespace(event.target.value)}
-            className="rounded-full border border-stone-300 bg-white/80 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none"
+            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-accent focus:outline-none"
             aria-label="Filter by namespace"
           >
             <option value="">all namespaces</option>
@@ -82,7 +82,7 @@ export function StatusBar({ problems, namespaces, updatedAt, onRefresh, isFetchi
               </option>
             ))}
           </select>
-          <label className="flex items-center gap-2 rounded-full border border-stone-300 bg-white/80 px-3 py-1.5 text-sm text-ink">
+          <label className="flex items-center gap-2 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-900">
             <input
               type="checkbox"
               checked={filters.brokenOnly}
@@ -95,20 +95,20 @@ export function StatusBar({ problems, namespaces, updatedAt, onRefresh, isFetchi
             <button
               type="button"
               onClick={filters.reset}
-              className="rounded-full px-3 py-1.5 text-xs uppercase tracking-wider text-stone-600 hover:text-ink"
+              className="rounded-md px-2 py-1 text-xs text-slate-600 hover:text-slate-900"
             >
               clear
             </button>
           )}
         </div>
 
-        <div className="flex items-center gap-3 text-xs text-stone-600">
-          <span>updated {formatRelative(updatedAt, nowMs)}</span>
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          <span className="tabular-nums">updated {formatRelative(updatedAt, nowMs)}</span>
           <button
             type="button"
             onClick={onRefresh}
             disabled={isFetching}
-            className="rounded-full border border-accent/30 bg-white/80 px-3 py-1 font-semibold uppercase tracking-wider text-accent hover:bg-accent/10 disabled:opacity-50"
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             {isFetching ? "refreshing…" : "refresh"}
           </button>

@@ -35,21 +35,21 @@ export function PendingClaimsByReason({ items }: { items: PendingClaimReason[] }
           const key = entry.reason;
           const open = expanded.has(key);
           return (
-            <li key={key} className="rounded-2xl border border-stone-200 bg-white/70">
+            <li key={key} className="rounded-2xl border border-slate-200 bg-white/70">
               <button
                 type="button"
                 onClick={() => toggle(key)}
                 className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-emerald-50/60"
                 aria-expanded={open}
               >
-                <span className="text-sm font-semibold text-stone-800">{entry.reason}</span>
-                <div className="flex items-center gap-2 text-xs text-stone-500">
+                <span className="text-sm font-semibold text-slate-800">{entry.reason}</span>
+                <div className="flex items-center gap-2 text-xs text-slate-500">
                   <span>{open ? "hide" : "show"}</span>
                   <Badge tone="neutral">{entry.count}</Badge>
                 </div>
               </button>
               {open && (
-                <ul className="border-t border-stone-200 bg-canvas/40 px-3 py-2 text-sm text-stone-700">
+                <ul className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
                   {entry.claims.map((claim) => (
                     <li key={`${claim.namespace}/${claim.name}`}>
                       <button
@@ -64,11 +64,11 @@ export function PendingClaimsByReason({ items }: { items: PendingClaimReason[] }
                         className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-1 text-left hover:bg-white"
                       >
                         <span className="truncate">
-                          <span className="text-stone-500">{claim.namespace}</span>
-                          <span className="mx-1 text-stone-400">/</span>
+                          <span className="text-slate-500">{claim.namespace}</span>
+                          <span className="mx-1 text-slate-400">/</span>
                           <span>{claim.name}</span>
                         </span>
-                        <span className="text-xs text-stone-400">open</span>
+                        <span className="text-xs text-slate-400">open</span>
                       </button>
                     </li>
                   ))}

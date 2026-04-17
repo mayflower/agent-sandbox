@@ -1,22 +1,18 @@
-import type { OverviewSnapshot, PhaseDatum, SandboxPhase, WarmPoolLiveView } from "@agent-sandbox/dashboard-shared";
+import type { LiveOverview, PhaseDatum, SandboxPhase } from "@agent-sandbox/dashboard-shared";
 
 import { cn } from "../lib/utils.js";
 import { Card } from "./ui/card.js";
-import { PendingClaimsByReason } from "./PendingClaimsByReason.js";
-import { WarmPoolMatrix } from "./WarmPoolMatrix.js";
 
 const PHASE_CLASSES: Record<SandboxPhase, string> = {
   ready: "bg-emerald-500",
   starting: "bg-teal-400",
   retained: "bg-slate-400",
-  stopped: "bg-stone-400",
+  stopped: "bg-slate-400",
   terminating: "bg-amber-400",
   "runtime-missing": "bg-rose-500",
-  expired: "bg-stone-500",
+  expired: "bg-slate-500",
   deleting: "bg-amber-600",
 };
-
-const PHASE_DOT_CLASSES: Record<SandboxPhase, string> = PHASE_CLASSES;
 
 interface KPIProps {
   label: string;
@@ -27,31 +23,31 @@ interface KPIProps {
 
 function KPI({ label, value, hint, tone = "neutral" }: KPIProps) {
   return (
-    <Card className="bg-white/85" title={hint}>
-      <div className="text-xs uppercase tracking-[0.24em] text-stone-500">{label}</div>
+    <Card className="py-3" title={hint}>
+      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
       <div
         className={cn(
-          "mt-2 font-display text-4xl tabular-nums",
+          "mt-1 text-3xl font-semibold tabular-nums leading-tight",
           tone === "danger" && "text-rose-700",
           tone === "warning" && "text-amber-700",
           tone === "success" && "text-emerald-700",
-          tone === "neutral" && "text-ink",
+          tone === "neutral" && "text-slate-900",
         )}
       >
         {value}
       </div>
-      {hint && <p className="mt-1 text-xs text-stone-500">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
     </Card>
   );
 }
 
 function PhaseStrip({ phases, total }: { phases: PhaseDatum[]; total: number }) {
   if (total === 0) {
-    return <p className="text-sm text-stone-600">No sandboxes.</p>;
+    return <p className="text-sm text-slate-500">No sandboxes match current filters.</p>;
   }
   return (
     <div>
-      <div className="flex h-3 w-full overflow-hidden rounded-full bg-stone-200">
+      <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
         {phases.map((entry) => (
           <div
             key={entry.phase}
@@ -62,12 +58,12 @@ function PhaseStrip({ phases, total }: { phases: PhaseDatum[]; total: number }) 
           />
         ))}
       </div>
-      <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-stone-700 md:grid-cols-3">
+      <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-700">
         {phases.map((entry) => (
-          <li key={entry.phase} className="flex items-center gap-2 tabular-nums">
-            <span className={cn("h-2.5 w-2.5 rounded-full", PHASE_DOT_CLASSES[entry.phase])} aria-hidden />
-            <span className="flex-1 truncate">{entry.label}</span>
-            <span className="font-semibold text-ink">{entry.count}</span>
+          <li key={entry.phase} className="flex items-center gap-1.5 tabular-nums">
+            <span className={cn("h-2 w-2 rounded-full", PHASE_CLASSES[entry.phase])} aria-hidden />
+            <span>{entry.label}</span>
+            <span className="font-semibold text-slate-900">{entry.count}</span>
           </li>
         ))}
       </ul>
@@ -75,20 +71,14 @@ function PhaseStrip({ phases, total }: { phases: PhaseDatum[]; total: number }) 
   );
 }
 
-export function OverviewSection({
-  overview,
-  warmPools,
-}: {
-  overview: OverviewSnapshot;
-  warmPools: WarmPoolLiveView[];
-}) {
-  const { totals, phaseBreakdown, pendingClaimsByReason } = overview;
+export function OverviewSection({ overview }: { overview: LiveOverview }) {
+  const { totals, phaseBreakdown } = overview;
   const warmPoolShortfall = totals.warmPoolDesiredTotal - totals.warmPoolReadyTotal;
   const runtimeMissingActive = totals.activeSandboxes - totals.runtimeReadySandboxes;
   const unmappedRatio = totals.totalSandboxes > 0 ? totals.unmappedSandboxes / totals.totalSandboxes : 0;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <KPI
           label="Active Sandboxes"
@@ -105,7 +95,7 @@ export function OverviewSection({
           label="Pending Claims"
           value={totals.pendingClaims}
           tone={totals.pendingClaims > 0 ? "warning" : "neutral"}
-          hint={totals.claimsWithReadinessMismatch > 0 ? `${totals.claimsWithReadinessMismatch} with readiness mismatch` : "claim.status.sandbox unbound"}
+          hint={totals.claimsWithReadinessMismatch > 0 ? `${totals.claimsWithReadinessMismatch} readiness mismatch` : "claim.status.sandbox unbound"}
         />
         <KPI
           label="Warm Pool Ready / Desired"
@@ -115,28 +105,23 @@ export function OverviewSection({
         />
       </div>
 
-      <Card data-testid="chart-sandbox-status">
+      <Card className="py-3">
         <div className="flex items-baseline justify-between gap-3">
-          <h2 className="font-display text-lg text-ink">Phase breakdown</h2>
-          <span className="text-xs text-stone-500 tabular-nums">{totals.totalSandboxes} sandboxes</span>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">Phase breakdown</h2>
+          <span className="text-xs text-slate-500 tabular-nums">{totals.totalSandboxes} sandboxes</span>
         </div>
-        <div className="mt-3">
+        <div className="mt-2">
           <PhaseStrip phases={phaseBreakdown} total={totals.totalSandboxes} />
         </div>
       </Card>
 
       {unmappedRatio >= 0.5 && totals.unmappedSandboxes > 0 && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          <strong>{totals.unmappedSandboxes}</strong> of {totals.totalSandboxes} sandboxes have no template label.
-          Adopt the <code className="rounded bg-amber-100 px-1">x-k8s.io/sandbox-template</code> annotation to attribute
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <strong>{totals.unmappedSandboxes}</strong> of {totals.totalSandboxes} sandboxes have no template label. Adopt the{" "}
+          <code className="rounded bg-amber-100 px-1 font-mono">x-k8s.io/sandbox-template</code> annotation to attribute
           workloads to templates.
         </div>
       )}
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <WarmPoolMatrix warmPools={warmPools} />
-        <PendingClaimsByReason items={pendingClaimsByReason} />
-      </div>
     </div>
   );
 }
