@@ -43,6 +43,9 @@ describe("kubernetes inventory provider", () => {
       async readControllerHealth() {
         return null;
       },
+      async deleteSandbox() {},
+      async deleteClaim() {},
+      async patchSandboxAnnotations() {},
     };
 
     const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 0 });
@@ -94,6 +97,9 @@ describe("kubernetes inventory provider", () => {
       async readControllerHealth() {
         return { available: true, ready: 1, desired: 1 };
       },
+      async deleteSandbox() {},
+      async deleteClaim() {},
+      async patchSandboxAnnotations() {},
     };
 
     const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 0 });
@@ -133,6 +139,9 @@ describe("kubernetes inventory provider", () => {
       async readControllerHealth() {
         return null;
       },
+      async deleteSandbox() {},
+      async deleteClaim() {},
+      async patchSandboxAnnotations() {},
     };
 
     const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 0 });

@@ -33,6 +33,9 @@ export interface ClusterReader {
   listWarmPools(): Promise<SupportedList<RawSandboxWarmPool>>;
   listTemplates(): Promise<SupportedList<RawSandboxTemplate>>;
   readControllerHealth(): Promise<ControllerHealth | null>;
+  deleteSandbox(namespace: string, name: string): Promise<void>;
+  deleteClaim(namespace: string, name: string): Promise<void>;
+  patchSandboxAnnotations(namespace: string, name: string, annotations: Record<string, string>): Promise<void>;
 }
 
 function asItems<T>(value: unknown): T[] {
@@ -182,6 +185,37 @@ export class KubernetesClusterReader implements ClusterReader {
       }),
     );
   }
+
+  async deleteSandbox(namespace: string, name: string): Promise<void> {
+    await this.customObjectsApi.deleteNamespacedCustomObject({
+      group: "agents.x-k8s.io",
+      version: "v1alpha1",
+      namespace,
+      plural: "sandboxes",
+      name,
+    });
+  }
+
+  async deleteClaim(namespace: string, name: string): Promise<void> {
+    await this.customObjectsApi.deleteNamespacedCustomObject({
+      group: "extensions.agents.x-k8s.io",
+      version: "v1alpha1",
+      namespace,
+      plural: "sandboxclaims",
+      name,
+    });
+  }
+
+  async patchSandboxAnnotations(namespace: string, name: string, annotations: Record<string, string>): Promise<void> {
+    await this.customObjectsApi.patchNamespacedCustomObject({
+      group: "agents.x-k8s.io",
+      version: "v1alpha1",
+      namespace,
+      plural: "sandboxes",
+      name,
+      body: { metadata: { annotations } },
+    });
+  }
 }
 
 export class KubernetesInventoryProvider implements InventoryProvider {
@@ -253,6 +287,27 @@ export class KubernetesInventoryProvider implements InventoryProvider {
     };
 
     return snapshot;
+  }
+
+  private invalidate(): void {
+    this.cache = undefined;
+  }
+
+  async deleteSandbox(namespace: string, name: string): Promise<void> {
+    await this.reader.deleteSandbox(namespace, name);
+    this.invalidate();
+  }
+
+  async deleteClaim(namespace: string, name: string): Promise<void> {
+    await this.reader.deleteClaim(namespace, name);
+    this.invalidate();
+  }
+
+  async reconcileSandbox(namespace: string, name: string): Promise<void> {
+    await this.reader.patchSandboxAnnotations(namespace, name, {
+      "agents.x-k8s.io/reconcile-trigger": new Date().toISOString(),
+    });
+    this.invalidate();
   }
 }
 

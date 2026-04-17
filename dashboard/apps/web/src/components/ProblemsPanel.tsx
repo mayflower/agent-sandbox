@@ -1,7 +1,10 @@
 import { groupProblems, type ProblemGroup, type ProblemView } from "@agent-sandbox/dashboard-shared";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
+import { api } from "../lib/api.js";
 import { useFilters } from "../lib/filters.js";
+import { ActionButton } from "./ActionButton.js";
 import { Badge } from "./ui/badge.js";
 import { Card, CardTitle } from "./ui/card.js";
 
@@ -93,6 +96,11 @@ function ProblemGroupCard({
   onToggle: () => void;
   onItemClick: (item: ProblemView) => void;
 }) {
+  const queryClient = useQueryClient();
+  const cleanup = useMutation({
+    mutationFn: () => api.cleanupOrphans(),
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
   return (
     <article className="rounded-2xl border border-slate-200 bg-white/70">
       <button
@@ -113,6 +121,22 @@ function ProblemGroupCard({
         </div>
         <Badge tone="neutral">{group.count}</Badge>
       </button>
+      {group.kind === "runtime-missing" && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 px-3 py-2">
+          <ActionButton
+            label={`Delete ${group.count} orphaned sandbox${group.count === 1 ? "" : "es"}`}
+            confirmLabel="Confirm bulk delete"
+            tone="danger"
+            pending={cleanup.isPending}
+            onConfirm={() => cleanup.mutateAsync()}
+          />
+          {cleanup.data && (
+            <span className="text-xs text-slate-600">
+              Deleted {cleanup.data.results.filter((result) => result.ok).length} of {cleanup.data.attempted}.
+            </span>
+          )}
+        </div>
+      )}
       {expanded && (
         <ul className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
           {group.items.map((item) => (

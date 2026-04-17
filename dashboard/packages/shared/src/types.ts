@@ -205,6 +205,16 @@ export interface InventorySnapshot {
 export interface InventoryProvider {
   getCapabilities(): Promise<Capabilities>;
   getSnapshot(): Promise<InventorySnapshot>;
+  deleteSandbox?(namespace: string, name: string): Promise<void>;
+  deleteClaim?(namespace: string, name: string): Promise<void>;
+  reconcileSandbox?(namespace: string, name: string): Promise<void>;
+}
+
+export interface ActionResult {
+  kind: "Sandbox" | "SandboxClaim";
+  namespace: string;
+  name: string;
+  action: "deleted" | "reconciled";
 }
 
 export interface StatDatum {

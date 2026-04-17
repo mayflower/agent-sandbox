@@ -7,9 +7,12 @@ import type {
   TemplateLiveView,
   WarmPoolLiveView,
 } from "@agent-sandbox/dashboard-shared";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { api } from "../lib/api.js";
 import { useFilters, type SandboxTarget } from "../lib/filters.js";
+import { ActionButton } from "./ActionButton.js";
 import { Badge } from "./ui/badge.js";
 import { Card, CardTitle } from "./ui/card.js";
 import { Drawer } from "./ui/drawer.js";
@@ -38,6 +41,81 @@ function tabKeyForKind(kind: SandboxTarget["resourceKind"]): string {
     case "SandboxTemplate":
       return "templates";
   }
+}
+
+function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
+  const queryClient = useQueryClient();
+  const onSuccess = () => queryClient.invalidateQueries();
+  const del = useMutation({
+    mutationFn: () => api.deleteSandbox(sandbox.namespace, sandbox.name),
+    onSuccess,
+  });
+  const reconcile = useMutation({
+    mutationFn: () => api.reconcileSandbox(sandbox.namespace, sandbox.name),
+    onSuccess,
+  });
+
+  const ORPHAN_MIN_AGE = 600;
+  const canDelete =
+    (sandbox.runtimeState === "missing" && sandbox.ageSeconds >= ORPHAN_MIN_AGE) ||
+    sandbox.objectState === "expired" ||
+    sandbox.objectState === "retained";
+  const deleteReason = canDelete
+    ? sandbox.runtimeState === "missing"
+      ? "Pod missing; sandbox is orphaned."
+      : `Object state is ${sandbox.objectState}.`
+    : "Not eligible: runtime still present and sandbox is active.";
+
+  return (
+    <section>
+      <h3 className="font-semibold text-slate-900">Actions</h3>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <ActionButton
+          label="Delete sandbox"
+          confirmLabel="Confirm delete"
+          tone="danger"
+          disabled={!canDelete}
+          pending={del.isPending}
+          onConfirm={() => del.mutateAsync()}
+        />
+        <ActionButton
+          label="Retry reconcile"
+          confirmLabel="Confirm reconcile"
+          pending={reconcile.isPending}
+          onConfirm={() => reconcile.mutateAsync()}
+        />
+      </div>
+      <p className="mt-2 text-xs text-slate-500">{deleteReason} Reconcile bumps an annotation; always safe.</p>
+    </section>
+  );
+}
+
+function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templateMissing: boolean }) {
+  const queryClient = useQueryClient();
+  const del = useMutation({
+    mutationFn: () => api.deleteClaim(claim.namespace, claim.name),
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+  return (
+    <section>
+      <h3 className="font-semibold text-slate-900">Actions</h3>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <ActionButton
+          label="Delete claim"
+          confirmLabel="Confirm delete"
+          tone="danger"
+          disabled={!templateMissing}
+          pending={del.isPending}
+          onConfirm={() => del.mutateAsync()}
+        />
+      </div>
+      <p className="mt-2 text-xs text-slate-500">
+        {templateMissing
+          ? `Template "${claim.templateRef}" is not present; safe to delete.`
+          : "Template exists; dashboard only deletes claims whose template is missing."}
+      </p>
+    </section>
+  );
 }
 
 function matchesSearch(name: string, namespace: string, search: string): boolean {
@@ -389,6 +467,7 @@ export function InventorySection({
               kubectl describe sandbox {sandbox.name} -n {sandbox.namespace}
             </pre>
           </section>
+          <SandboxActions sandbox={sandbox} />
         </div>
       ),
     });
@@ -428,6 +507,14 @@ export function InventorySection({
               </p>
             </section>
           )}
+          <ClaimActions
+            claim={claim}
+            templateMissing={
+              !templates.some(
+                (template) => template.namespace === claim.namespace && template.name === claim.templateRef,
+              )
+            }
+          />
         </div>
       ),
     });
