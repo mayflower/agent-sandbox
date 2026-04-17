@@ -2,6 +2,7 @@ import * as k8s from "@kubernetes/client-node";
 import { existsSync } from "node:fs";
 import type {
   Capabilities,
+  ControllerHealth,
   InventoryProvider,
   InventorySnapshot,
   RawEvent,
@@ -13,6 +14,9 @@ import type {
   RawSandboxWarmPool,
   RawService,
 } from "@agent-sandbox/dashboard-shared";
+
+const CONTROLLER_NAMESPACE = process.env.DASHBOARD_CONTROLLER_NAMESPACE ?? "agent-sandbox-system";
+const CONTROLLER_DEPLOYMENT = process.env.DASHBOARD_CONTROLLER_DEPLOYMENT ?? "agent-sandbox-controller";
 
 type SupportedList<T> = {
   supported: boolean;
@@ -28,6 +32,7 @@ export interface ClusterReader {
   listClaims(): Promise<SupportedList<RawSandboxClaim>>;
   listWarmPools(): Promise<SupportedList<RawSandboxWarmPool>>;
   listTemplates(): Promise<SupportedList<RawSandboxTemplate>>;
+  readControllerHealth(): Promise<ControllerHealth | null>;
 }
 
 function asItems<T>(value: unknown): T[] {
@@ -87,11 +92,36 @@ export class KubernetesClusterReader implements ClusterReader {
   private readonly customObjectsApi: k8s.CustomObjectsApi;
   private readonly coreApi: k8s.CoreV1Api;
   private readonly eventsApi: k8s.EventsV1Api;
+  private readonly appsApi: k8s.AppsV1Api;
 
   constructor(kubeConfig: k8s.KubeConfig) {
     this.customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
     this.coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
     this.eventsApi = kubeConfig.makeApiClient(k8s.EventsV1Api);
+    this.appsApi = kubeConfig.makeApiClient(k8s.AppsV1Api);
+  }
+
+  async readControllerHealth(): Promise<ControllerHealth | null> {
+    try {
+      const deployment = await this.appsApi.readNamespacedDeployment({
+        name: CONTROLLER_DEPLOYMENT,
+        namespace: CONTROLLER_NAMESPACE,
+      });
+      const desired = deployment.spec?.replicas ?? 0;
+      const ready = deployment.status?.readyReplicas ?? 0;
+      const availableCondition = deployment.status?.conditions?.find((condition) => condition.type === "Available");
+      const available = availableCondition?.status === "True" && ready >= desired;
+      const health: ControllerHealth = { available, ready, desired };
+      if (availableCondition?.reason) {
+        health.reason = availableCondition.reason;
+      }
+      return health;
+    } catch (error) {
+      if (error instanceof k8s.HttpError && (error.statusCode === 403 || error.statusCode === 404)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async listSandboxes(): Promise<RawSandbox[]> {
@@ -174,7 +204,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
       return this.cache.snapshot;
     }
 
-    const [sandboxes, pods, services, pvcs, events, claims, warmPools, templates] = await Promise.all([
+    const [sandboxes, pods, services, pvcs, events, claims, warmPools, templates, controllerHealth] = await Promise.all([
       this.reader.listSandboxes(),
       this.reader.listPods(),
       this.reader.listServices(),
@@ -183,6 +213,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
       this.reader.listClaims(),
       this.reader.listWarmPools(),
       this.reader.listTemplates(),
+      this.reader.readControllerHealth(),
     ]);
 
     const snapshot: InventorySnapshot = {
@@ -192,6 +223,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
         warmPools: warmPools.supported,
         templates: templates.supported,
         events: true,
+        controllerHealth: controllerHealth !== null,
       },
       sandboxes,
       claims: claims.items,
@@ -201,6 +233,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
       services,
       pvcs,
       events,
+      controllerHealth,
     };
 
     this.cache = {

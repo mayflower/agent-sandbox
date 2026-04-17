@@ -31,6 +31,7 @@ describe("dashboard server app", () => {
       warmPools: false,
       templates: false,
       events: true,
+      controllerHealth: true,
     });
 
     await app.close();
@@ -65,6 +66,10 @@ describe("dashboard server app", () => {
     expect(templates.json().some((template: { name: string; networkPolicyMode: string }) => template.name === "custom-net" && template.networkPolicyMode === "custom")).toBe(true);
     expect(problems.json().length).toBeGreaterThan(0);
     expect(events.json()).toHaveLength(1);
+
+    const controllerHealth = await app.inject({ method: "GET", url: "/api/controller-health" });
+    expect(controllerHealth.statusCode).toBe(200);
+    expect(controllerHealth.json()).toMatchObject({ available: true, ready: 1, desired: 1 });
 
     await app.close();
   });

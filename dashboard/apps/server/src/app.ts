@@ -34,6 +34,14 @@ export function buildApp(options: { provider: InventoryProvider; staticDir?: str
 
   app.get("/api/capabilities", async () => options.provider.getCapabilities());
 
+  app.get("/api/controller-health", async (_request, reply) => {
+    const snapshot = await options.provider.getSnapshot();
+    if (!snapshot.controllerHealth) {
+      return reply.code(204).send();
+    }
+    return snapshot.controllerHealth;
+  });
+
   app.get("/api/overview", async () => {
     const snapshot = await options.provider.getSnapshot();
     return buildOverviewSnapshot(snapshot);
