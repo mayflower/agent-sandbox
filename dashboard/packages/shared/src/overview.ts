@@ -1,6 +1,47 @@
 import { getAgeSeconds } from "./helpers.js";
 import { normalizeClaims, normalizeSandboxes, normalizeTemplates, normalizeWarmPools } from "./normalizers.js";
-import type { InventorySnapshot, OverviewSnapshot, StatDatum, WarmPoolBarDatum } from "./types.js";
+import type {
+  InventorySnapshot,
+  OverviewSnapshot,
+  PhaseDatum,
+  SandboxLiveView,
+  SandboxPhase,
+  StatDatum,
+  WarmPoolBarDatum,
+} from "./types.js";
+
+const PHASE_ORDER: SandboxPhase[] = [
+  "ready",
+  "starting",
+  "retained",
+  "stopped",
+  "terminating",
+  "runtime-missing",
+  "expired",
+  "deleting",
+];
+
+const PHASE_LABELS: Record<SandboxPhase, string> = {
+  ready: "Ready",
+  starting: "Starting",
+  retained: "Retained",
+  stopped: "Stopped",
+  terminating: "Terminating",
+  "runtime-missing": "Runtime missing",
+  expired: "Expired",
+  deleting: "Deleting",
+};
+
+function resolvePhase(sandbox: SandboxLiveView): SandboxPhase {
+  if (sandbox.objectState === "deleting") return "deleting";
+  if (sandbox.objectState === "expired") return "expired";
+  if (sandbox.objectState === "retained") return "retained";
+  if (sandbox.runtimeState === "ready") return "ready";
+  if (sandbox.runtimeState === "starting") return "starting";
+  if (sandbox.runtimeState === "terminating") return "terminating";
+  if (sandbox.runtimeState === "stopped") return "stopped";
+  return "runtime-missing";
+}
 
 function toStatData(record: Record<string, number>): StatDatum[] {
   return Object.entries(record).map(([label, value]) => ({ label, value }));
@@ -68,8 +109,20 @@ export function buildOverviewSnapshot(snapshot: InventorySnapshot, now = new Dat
     ready: warmPool.readyReplicas,
   }));
 
+  const phaseCounts = new Map<SandboxPhase, number>();
+  for (const sandbox of sandboxes) {
+    const phase = resolvePhase(sandbox);
+    phaseCounts.set(phase, (phaseCounts.get(phase) ?? 0) + 1);
+  }
+  const phaseBreakdown: PhaseDatum[] = PHASE_ORDER.filter((phase) => (phaseCounts.get(phase) ?? 0) > 0).map(
+    (phase) => ({ phase, label: PHASE_LABELS[phase], count: phaseCounts.get(phase) ?? 0 }),
+  );
+
+  const unmappedSandboxes = sandboxes.filter((sandbox) => !sandbox.templateRef).length;
+
   return {
     totals: {
+      totalSandboxes: sandboxes.length,
       activeSandboxes: sandboxes.filter((sandbox) => sandbox.objectState === "active").length,
       runtimeReadySandboxes: sandboxes.filter((sandbox) => sandbox.effectiveReady).length,
       runtimeMissingSandboxes: sandboxes.filter((sandbox) => sandbox.runtimeState === "missing").length,
@@ -80,7 +133,9 @@ export function buildOverviewSnapshot(snapshot: InventorySnapshot, now = new Dat
       templatesInUse: templates.filter(
         (template) => template.activeClaims > 0 || template.activeSandboxes > 0 || template.activeWarmPools > 0,
       ).length,
+      unmappedSandboxes,
     },
+    phaseBreakdown,
     charts: {
       sandboxesByStatus: toStatData(sandboxesByStatus),
       sandboxesByTemplate: toStatData(sandboxesByTemplate),

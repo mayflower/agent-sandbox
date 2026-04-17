@@ -12,6 +12,8 @@ import {
 import type {
   ClaimLiveView,
   InventorySnapshot,
+  ProblemGroup,
+  ProblemKind,
   ProblemView,
   RawPod,
   RawSandbox,
@@ -20,6 +22,52 @@ import type {
   WarmPoolLiveView,
   ClaimLiveView as ClaimView,
 } from "./types.js";
+
+const GROUP_SUMMARIES: Record<ProblemKind, string> = {
+  "runtime-missing": "Sandbox active but runtime pod missing",
+  "retained-without-runtime": "Retained sandbox without running pod",
+  "claim-runtime-mismatch": "Claim readiness disagrees with runtime",
+  "warm-pool-underfilled": "Warm pool below desired capacity",
+  "unresolved-template-link": "Resource references a missing template",
+};
+
+const GROUP_SEVERITY_RANK: Record<ProblemGroup["severity"], number> = {
+  error: 0,
+  warning: 1,
+  info: 2,
+};
+
+export function groupProblems(problems: ProblemView[]): ProblemGroup[] {
+  const map = new Map<ProblemKind, ProblemGroup>();
+
+  for (const problem of problems) {
+    const existing = map.get(problem.kind);
+    if (existing) {
+      existing.count += 1;
+      existing.items.push(problem);
+      if (GROUP_SEVERITY_RANK[problem.severity] < GROUP_SEVERITY_RANK[existing.severity]) {
+        existing.severity = problem.severity;
+      }
+      continue;
+    }
+
+    map.set(problem.kind, {
+      kind: problem.kind,
+      severity: problem.severity,
+      summary: GROUP_SUMMARIES[problem.kind] ?? problem.summary,
+      count: 1,
+      items: [problem],
+    });
+  }
+
+  return [...map.values()].sort((left, right) => {
+    const severityDelta = GROUP_SEVERITY_RANK[left.severity] - GROUP_SEVERITY_RANK[right.severity];
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+    return right.count - left.count;
+  });
+}
 
 function withOptional<K extends string, V>(
   key: K,

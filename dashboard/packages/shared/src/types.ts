@@ -209,8 +209,25 @@ export interface WarmPoolBarDatum {
   desired: number;
 }
 
+export type SandboxPhase =
+  | "ready"
+  | "starting"
+  | "terminating"
+  | "stopped"
+  | "runtime-missing"
+  | "retained"
+  | "expired"
+  | "deleting";
+
+export interface PhaseDatum {
+  phase: SandboxPhase;
+  label: string;
+  count: number;
+}
+
 export interface OverviewSnapshot {
   totals: {
+    totalSandboxes: number;
     activeSandboxes: number;
     runtimeReadySandboxes: number;
     runtimeMissingSandboxes: number;
@@ -219,7 +236,9 @@ export interface OverviewSnapshot {
     warmPoolReadyTotal: number;
     warmPoolDesiredTotal: number;
     templatesInUse: number;
+    unmappedSandboxes: number;
   };
+  phaseBreakdown: PhaseDatum[];
   charts: {
     sandboxesByStatus: StatDatum[];
     sandboxesByTemplate: StatDatum[];
@@ -315,6 +334,14 @@ export interface ProblemView {
   resourceKind: "Sandbox" | "SandboxClaim" | "SandboxWarmPool" | "SandboxTemplate";
   resourceName: string;
   summary: string;
+}
+
+export interface ProblemGroup {
+  kind: ProblemKind;
+  severity: "info" | "warning" | "error";
+  summary: string;
+  count: number;
+  items: ProblemView[];
 }
 
 export interface EventView {

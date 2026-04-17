@@ -4,9 +4,18 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App.js";
-import { buildOverviewSnapshot, classifyProblems, mapEvents, normalizeClaims, normalizeSandboxes, normalizeTemplates, normalizeWarmPools } from "@agent-sandbox/dashboard-shared";
+import {
+  buildOverviewSnapshot,
+  classifyProblems,
+  mapEvents,
+  normalizeClaims,
+  normalizeSandboxes,
+  normalizeTemplates,
+  normalizeWarmPools,
+} from "@agent-sandbox/dashboard-shared";
 
 const realFetch = global.fetch;
+const NOW = new Date("2026-04-15T12:00:00Z");
 
 function renderApp() {
   const queryClient = new QueryClient({
@@ -36,12 +45,12 @@ function mockDashboardResponses(options?: { coreOnly?: boolean; failOverview?: b
   });
   const routes = new Map<string, unknown>([
     ["/api/capabilities", snapshot.capabilities],
-    ["/api/overview", buildOverviewSnapshot(snapshot, new Date("2026-04-15T12:00:00Z"))],
-    ["/api/sandboxes", normalizeSandboxes(snapshot, new Date("2026-04-15T12:00:00Z"))],
-    ["/api/claims", normalizeClaims(snapshot, new Date("2026-04-15T12:00:00Z"))],
-    ["/api/warm-pools", normalizeWarmPools(snapshot, new Date("2026-04-15T12:00:00Z"))],
-    ["/api/templates", normalizeTemplates(snapshot, new Date("2026-04-15T12:00:00Z"))],
-    ["/api/problems", classifyProblems(snapshot, new Date("2026-04-15T12:00:00Z"))],
+    ["/api/overview", buildOverviewSnapshot(snapshot, NOW)],
+    ["/api/sandboxes", normalizeSandboxes(snapshot, NOW)],
+    ["/api/claims", normalizeClaims(snapshot, NOW)],
+    ["/api/warm-pools", normalizeWarmPools(snapshot, NOW)],
+    ["/api/templates", normalizeTemplates(snapshot, NOW)],
+    ["/api/problems", classifyProblems(snapshot, NOW)],
   ]);
 
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -72,49 +81,62 @@ afterEach(() => {
 });
 
 describe("dashboard web app", () => {
-  it("renders the core-only shell with loading state and sandbox tab", async () => {
+  it("renders the core-only shell and sandbox tab", async () => {
     mockDashboardResponses({ coreOnly: true });
     renderApp();
 
     expect(screen.getByText("Loading dashboard snapshot…")).toBeInTheDocument();
-    expect(await screen.findByText("Agent Sandbox Dashboard")).toBeInTheDocument();
+    expect(await screen.findByText("Agent Sandbox")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Sandboxes" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Claims" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Overview")).toBeInTheDocument();
     expect(screen.getByLabelText("Inventory")).toBeInTheDocument();
+    expect(screen.getByLabelText("Search resources by name")).toBeInTheDocument();
   });
 
-  it("renders extension tabs, charts, filters, problems, and drawer events", async () => {
+  it("renders extension tabs, phase breakdown, and grouped problems", async () => {
     mockDashboardResponses();
     renderApp();
 
     expect(await screen.findByRole("tab", { name: "Claims" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Warm Pools" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Templates" })).toBeInTheDocument();
-    expect(screen.getByTestId("chart-sandbox-status")).toBeInTheDocument();
-    expect(screen.getByTestId("chart-template-usage")).toBeInTheDocument();
+    expect(screen.getByText("Phase breakdown")).toBeInTheDocument();
     expect(screen.getByText("Problems")).toBeInTheDocument();
-    expect(screen.getAllByText("Runtime resources are missing.", { exact: false }).length).toBeGreaterThan(0);
+    // Grouped problem summaries (not per-item duplicates)
+    expect(
+      screen.getAllByText(/Sandbox active but runtime pod missing|Retained sandbox without running pod|Resource references a missing template|Warm pool below desired capacity|Claim readiness disagrees with runtime/).length,
+    ).toBeGreaterThan(0);
+  });
 
-    fireEvent.change(screen.getByLabelText("Namespace"), { target: { value: "demo" } });
-    fireEvent.change(screen.getByLabelText("Owner Kind"), { target: { value: "claim" } });
+  it("opens a sandbox drawer with events from an inventory row", async () => {
+    mockDashboardResponses();
+    renderApp();
+
+    await screen.findByRole("tab", { name: "Claims" });
     fireEvent.click(screen.getByText("claim-ready"));
 
     await waitFor(() => {
-      expect(screen.getByText("Summary")).toBeInTheDocument();
+      expect(screen.getByText("Status")).toBeInTheDocument();
       expect(screen.getByText("Events")).toBeInTheDocument();
     });
+  });
 
-    fireEvent.click(screen.getByRole("tab", { name: "Claims" }));
-    fireEvent.click(screen.getByText("mismatch-claim"));
-    expect(await screen.findByText("Sandbox summary")).toBeInTheDocument();
+  it("expanding a problem group focuses the matching inventory row", async () => {
+    mockDashboardResponses();
+    renderApp();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Warm Pools" }));
-    expect(screen.getByText("underfilled")).toBeInTheDocument();
+    await screen.findByRole("tab", { name: "Claims" });
+    // Expand a problem group
+    const showButtons = screen.getAllByText("show");
+    fireEvent.click(showButtons[0]!);
+    // Click an item within the expanded group — selector: button whose text contains "open"
+    const openButtons = screen.getAllByText("open");
+    fireEvent.click(openButtons[0]!);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Templates" }));
-    expect(screen.getAllByText("default false").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("custom").length).toBeGreaterThan(0);
+    await waitFor(() => {
+      // Some drawer content appears
+      expect(screen.getByText("Events")).toBeInTheDocument();
+    });
   });
 
   it("renders an error state when the overview request fails", async () => {
