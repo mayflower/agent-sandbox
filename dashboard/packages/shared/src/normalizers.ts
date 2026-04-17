@@ -29,7 +29,14 @@ const GROUP_SUMMARIES: Record<ProblemKind, string> = {
   "claim-runtime-mismatch": "Claim readiness disagrees with runtime",
   "warm-pool-underfilled": "Warm pool below desired capacity",
   "unresolved-template-link": "Resource references a missing template",
+  "sandbox-stuck-starting": "Sandbox stuck starting",
+  "sandbox-stuck-terminating": "Sandbox stuck terminating",
+  "claim-stuck-pending": "Claim pending unusually long",
 };
+
+const STUCK_STARTING_SECONDS = 300;
+const STUCK_TERMINATING_SECONDS = 300;
+const STUCK_PENDING_SECONDS = 300;
 
 const GROUP_SEVERITY_RANK: Record<ProblemGroup["severity"], number> = {
   error: 0,
@@ -257,12 +264,18 @@ export function normalizeWarmPools(snapshot: InventorySnapshot, now = new Date()
       );
       const desiredReplicas = warmPool.spec.replicas;
       const readyReplicas = warmPool.status?.readyReplicas ?? members.filter((member) => member.effectiveReady).length;
+      const creatingReplicas = members.filter((member) => member.runtimeState === "starting").length;
+      const failedReplicas = members.filter(
+        (member) => member.runtimeState === "missing" || member.runtimeState === "stopped",
+      ).length;
       return {
         namespace,
         name: warmPool.metadata.name,
         templateRef: warmPool.spec.sandboxTemplateRef.name,
         desiredReplicas,
         readyReplicas,
+        creatingReplicas,
+        failedReplicas,
         fillRatio: desiredReplicas > 0 ? readyReplicas / desiredReplicas : 0,
         updateStrategy: warmPool.spec.updateStrategy?.type ?? "OnReplenish",
         memberSandboxes: members.map((member) => ({
@@ -356,6 +369,32 @@ export function classifyProblems(snapshot: InventorySnapshot, now = new Date()):
         summary: "Sandbox references a template that is not present in the snapshot.",
       });
     }
+
+    if (
+      sandbox.objectState === "active" &&
+      sandbox.runtimeState === "starting" &&
+      sandbox.ageSeconds >= STUCK_STARTING_SECONDS
+    ) {
+      problems.push({
+        kind: "sandbox-stuck-starting",
+        severity: "warning",
+        namespace: sandbox.namespace,
+        resourceKind: "Sandbox",
+        resourceName: sandbox.name,
+        summary: `Sandbox has been starting for ${Math.round(sandbox.ageSeconds / 60)}m.`,
+      });
+    }
+
+    if (sandbox.runtimeState === "terminating" && sandbox.ageSeconds >= STUCK_TERMINATING_SECONDS) {
+      problems.push({
+        kind: "sandbox-stuck-terminating",
+        severity: "warning",
+        namespace: sandbox.namespace,
+        resourceKind: "Sandbox",
+        resourceName: sandbox.name,
+        summary: "Sandbox has been terminating for a long time.",
+      });
+    }
   }
 
   for (const claim of claims) {
@@ -378,6 +417,20 @@ export function classifyProblems(snapshot: InventorySnapshot, now = new Date()):
         resourceKind: "SandboxClaim",
         resourceName: claim.name,
         summary: "Claim references a template that is not present in the snapshot.",
+      });
+    }
+
+    if (claim.state === "pending" && claim.ageSeconds >= STUCK_PENDING_SECONDS) {
+      const reason = claim.rawReadyCondition?.reason;
+      problems.push({
+        kind: "claim-stuck-pending",
+        severity: "warning",
+        namespace: claim.namespace,
+        resourceKind: "SandboxClaim",
+        resourceName: claim.name,
+        summary: reason
+          ? `Claim pending for ${Math.round(claim.ageSeconds / 60)}m (reason: ${reason}).`
+          : `Claim pending for ${Math.round(claim.ageSeconds / 60)}m.`,
       });
     }
   }

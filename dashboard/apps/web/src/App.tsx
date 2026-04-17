@@ -75,7 +75,7 @@ function AppContent() {
         isFetching={isFetching}
       />
       <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 md:px-8">
-        <OverviewSection overview={overviewQuery.data!} />
+        <OverviewSection overview={overviewQuery.data!} warmPools={warmPoolsQuery.data ?? []} />
 
         <section aria-label="Problems and inventory" className="grid gap-5 xl:grid-cols-[1.05fr_2fr]">
           <ProblemsPanel problems={problemsQuery.data ?? []} />

@@ -90,6 +90,36 @@ describe("shared dashboard domain helpers", () => {
     expect(readyEntry?.count).toBe(overview.totals.runtimeReadySandboxes);
   });
 
+  it("groups pending claims by Ready condition reason", () => {
+    const snapshot = createFixtureSnapshot();
+    const overview = buildOverviewSnapshot(snapshot, now);
+    const flattenedCount = overview.pendingClaimsByReason.reduce((sum, entry) => sum + entry.count, 0);
+    expect(flattenedCount).toBe(overview.totals.pendingClaims);
+    for (const entry of overview.pendingClaimsByReason) {
+      expect(entry.claims.length).toBe(entry.count);
+    }
+  });
+
+  it("reports creating and failed replicas per warm pool", () => {
+    const snapshot = createFixtureSnapshot();
+    const warmPools = normalizeWarmPools(snapshot, now);
+    for (const pool of warmPools) {
+      expect(pool.creatingReplicas).toBeGreaterThanOrEqual(0);
+      expect(pool.failedReplicas).toBeGreaterThanOrEqual(0);
+      expect(pool.creatingReplicas + pool.readyReplicas + pool.failedReplicas).toBeLessThanOrEqual(
+        pool.memberSandboxes.length + 1,
+      );
+    }
+  });
+
+  it("detects stuck-pending claims based on age", () => {
+    const snapshot = createFixtureSnapshot();
+    // Move reference time forward by 10 minutes from the fixture's 'pending-claim' creation.
+    const laterNow = new Date("2026-04-15T12:30:00Z");
+    const problems = classifyProblems(snapshot, laterNow);
+    expect(problems.some((problem) => problem.kind === "claim-stuck-pending")).toBe(true);
+  });
+
   it("keeps unknown event kinds and only uses controller owners marked true", () => {
     const snapshot = createFixtureSnapshot();
     snapshot.events.unshift({
