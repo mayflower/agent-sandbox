@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App.js";
@@ -109,5 +109,48 @@ describe("dashboard web app", () => {
     renderApp();
 
     expect(await screen.findByText("Dashboard snapshot failed to load.")).toBeInTheDocument();
+    expect(screen.getByText("claims", { selector: ".font-semibold" })).toBeInTheDocument();
+  });
+
+  it("clicking a sandbox row expands the detail inline with scoped events", async () => {
+    mockDashboardResponses();
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sandboxes" }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1, name: "Sandboxes" })).toBeInTheDocument();
+    });
+
+    const row = await screen.findByText("claim-ready");
+    fireEvent.click(row);
+
+    const details = await screen.findAllByText("Events");
+    expect(details.length).toBeGreaterThan(0);
+    expect(screen.getByText(/kubectl describe sandbox/)).toBeInTheDocument();
+  });
+
+  it("clicking 'open' in Problems switches view and expands the target row", async () => {
+    mockDashboardResponses();
+    renderApp();
+
+    await screen.findByRole("button", { name: "Claims" });
+
+    const problemsSection = screen.getByRole("region", { name: "Problems" });
+    const showButton = within(problemsSection).getAllByRole("button", { expanded: false })[0];
+    if (!showButton) throw new Error("No collapsible problem groups rendered");
+    fireEvent.click(showButton);
+
+    const openButton = within(problemsSection).getAllByText("open")[0];
+    if (!openButton) throw new Error("No open button in problem group");
+    fireEvent.click(openButton.closest("button")!);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { level: 1, name: /Sandboxes|Claims|Warm pools|Templates/ }),
+      ).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText("Events").length).toBeGreaterThan(0);
+    });
   });
 });

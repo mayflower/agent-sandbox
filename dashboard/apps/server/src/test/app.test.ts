@@ -1,5 +1,5 @@
 import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../app.js";
 import { FakeInventoryProvider } from "../providers/fake-provider.js";
@@ -70,6 +70,100 @@ describe("dashboard server app", () => {
     const controllerHealth = await app.inject({ method: "GET", url: "/api/controller-health" });
     expect(controllerHealth.statusCode).toBe(200);
     expect(controllerHealth.json()).toMatchObject({ available: true, ready: 1, desired: 1 });
+
+    await app.close();
+  });
+
+  it("reconcile endpoint calls the provider and returns the action result", async () => {
+    const reconcileSandbox = vi.fn().mockResolvedValue(undefined);
+    const app = buildApp({
+      provider: new FakeInventoryProvider({ snapshot: createFixtureSnapshot(), reconcileSandbox }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sandboxes/demo/claim-ready/reconcile",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      kind: "Sandbox",
+      namespace: "demo",
+      name: "claim-ready",
+      action: "reconciled",
+    });
+    expect(reconcileSandbox).toHaveBeenCalledWith("demo", "claim-ready");
+
+    await app.close();
+  });
+
+  it("reconcile returns 404 when the sandbox is not in the snapshot", async () => {
+    const app = buildApp({
+      provider: new FakeInventoryProvider({
+        snapshot: createFixtureSnapshot(),
+        reconcileSandbox: vi.fn(),
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sandboxes/demo/does-not-exist/reconcile",
+    });
+    expect(response.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it("delete endpoint rejects an active sandbox with 409", async () => {
+    const deleteSandbox = vi.fn();
+    const app = buildApp({
+      provider: new FakeInventoryProvider({ snapshot: createFixtureSnapshot(), deleteSandbox }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sandboxes/demo/claim-ready/delete",
+    });
+    expect(response.statusCode).toBe(409);
+    expect(deleteSandbox).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it("delete endpoint allows a retained sandbox and records the audit reason", async () => {
+    const deleteSandbox = vi.fn().mockResolvedValue(undefined);
+    const app = buildApp({
+      provider: new FakeInventoryProvider({ snapshot: createFixtureSnapshot(), deleteSandbox }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sandboxes/demo/retained-sbx/delete",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      kind: "Sandbox",
+      namespace: "demo",
+      name: "retained-sbx",
+      action: "deleted",
+    });
+    expect(deleteSandbox).toHaveBeenCalledWith("demo", "retained-sbx");
+
+    await app.close();
+  });
+
+  it("claim delete is rejected when the referenced template exists", async () => {
+    const deleteClaim = vi.fn();
+    const app = buildApp({
+      provider: new FakeInventoryProvider({ snapshot: createFixtureSnapshot(), deleteClaim }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/claims/demo/quick-claim/delete",
+    });
+    expect(response.statusCode).toBe(409);
+    expect(deleteClaim).not.toHaveBeenCalled();
 
     await app.close();
   });

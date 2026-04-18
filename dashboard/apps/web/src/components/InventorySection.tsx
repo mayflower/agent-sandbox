@@ -1,10 +1,12 @@
-import type {
-  ClaimLiveView,
-  EventView,
-  SandboxLiveView,
-  SandboxResourceKind,
-  TemplateLiveView,
-  WarmPoolLiveView,
+import {
+  viewForKind,
+  type ClaimLiveView,
+  type EventView,
+  type InventoryView,
+  type SandboxLiveView,
+  type SandboxResourceKind,
+  type TemplateLiveView,
+  type WarmPoolLiveView,
 } from "@agent-sandbox/dashboard-shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -14,19 +16,18 @@ import {
   useReactTable,
   type ColumnDef,
 } from "@tanstack/react-table";
-import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ActionButton } from "@/components/ActionButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
 import { cn, formatAge } from "@/lib/utils";
-
-export type InventoryView = "sandboxes" | "claims" | "warm-pools" | "templates";
 
 function keyOf(resource: { namespace: string; name: string }): string {
   return `${resource.namespace}/${resource.name}`;
@@ -178,7 +179,7 @@ function DataTable<T extends { namespace: string; name: string }>({
   const detailRowRef = useRef<HTMLTableRowElement | null>(null);
   useEffect(() => {
     if (expandedIndex < 0) return;
-    detailRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    detailRowRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
   }, [expandedIndex, expandedKey]);
 
   if (data.length === 0) {
@@ -521,7 +522,6 @@ export function InventorySection({
   rawWarmPools: WarmPoolLiveView[];
   rawTemplates: TemplateLiveView[];
   events: EventView[];
-  onRequestView?: (view: InventoryView) => void;
 }) {
   const filters = useFilters();
   const [ownerFilter, setOwnerFilter] = useState("");
@@ -589,22 +589,9 @@ export function InventorySection({
         ),
       },
       { header: "Age", accessorFn: (sandbox) => formatAge(sandbox.ageSeconds) },
-      {
-        header: "",
-        id: "chevron",
-        cell: ({ row }) => (
-          <ChevronDown
-            className={cn(
-              "h-3.5 w-3.5 text-muted-foreground transition-transform",
-              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
-            )}
-            aria-hidden
-          />
-        ),
-      },
     );
     return columns;
-  }, [showTemplateColumn, expandedKey]);
+  }, [showTemplateColumn]);
 
   const claimColumns = useMemo<ColumnDef<ClaimLiveView>[]>(
     () => [
@@ -626,21 +613,8 @@ export function InventorySection({
         ),
       },
       { header: "Mismatch", accessorFn: (claim) => (claim.readinessMismatch ? "yes" : "no") },
-      {
-        header: "",
-        id: "chevron",
-        cell: ({ row }) => (
-          <ChevronDown
-            className={cn(
-              "h-3.5 w-3.5 text-muted-foreground transition-transform",
-              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
-            )}
-            aria-hidden
-          />
-        ),
-      },
     ],
-    [expandedKey],
+    [],
   );
 
   const warmPoolColumns = useMemo<ColumnDef<WarmPoolLiveView>[]>(
@@ -665,21 +639,8 @@ export function InventorySection({
           </Badge>
         ),
       },
-      {
-        header: "",
-        id: "chevron",
-        cell: ({ row }) => (
-          <ChevronDown
-            className={cn(
-              "h-3.5 w-3.5 text-muted-foreground transition-transform",
-              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
-            )}
-            aria-hidden
-          />
-        ),
-      },
     ],
-    [expandedKey],
+    [],
   );
 
   const templateColumns = useMemo<ColumnDef<TemplateLiveView>[]>(
@@ -698,49 +659,52 @@ export function InventorySection({
       { header: "Claims", accessorKey: "activeClaims" },
       { header: "Sandboxes", accessorKey: "activeSandboxes" },
       { header: "Warm Pools", accessorKey: "activeWarmPools" },
-      {
-        header: "",
-        id: "chevron",
-        cell: ({ row }) => (
-          <ChevronDown
-            className={cn(
-              "h-3.5 w-3.5 text-muted-foreground transition-transform",
-              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
-            )}
-            aria-hidden
-          />
-        ),
-      },
     ],
-    [expandedKey],
+    [],
   );
 
   useEffect(() => {
     setExpandedKey(null);
   }, [view]);
 
+  const targetAttemptRef = useRef<{ key: string; attempts: number } | null>(null);
   useEffect(() => {
     const target = filters.target;
-    if (!target) return;
+    if (!target) {
+      targetAttemptRef.current = null;
+      return;
+    }
     const targetView = viewForKind(target.resourceKind);
     if (targetView !== view) return;
-    const inView = (() => {
-      const lookup = {
-        Sandbox: rawSandboxes,
-        SandboxClaim: rawClaims,
-        SandboxWarmPool: rawWarmPools,
-        SandboxTemplate: rawTemplates,
-      }[target.resourceKind];
-      return lookup?.find(
-        (row) => row.namespace === target.namespace && row.name === target.resourceName,
-      );
-    })();
+    const lookup = {
+      Sandbox: rawSandboxes,
+      SandboxClaim: rawClaims,
+      SandboxWarmPool: rawWarmPools,
+      SandboxTemplate: rawTemplates,
+    }[target.resourceKind];
+    const inView = lookup?.find(
+      (row) => row.namespace === target.namespace && row.name === target.resourceName,
+    );
     if (inView) {
       setExpandedKey(keyOf(inView));
+      filters.clearTarget();
+      targetAttemptRef.current = null;
+      return;
     }
-    filters.clearTarget();
+    const targetKey = `${target.resourceKind}/${target.namespace}/${target.resourceName}`;
+    const current = targetAttemptRef.current;
+    const attempts = current && current.key === targetKey ? current.attempts + 1 : 1;
+    targetAttemptRef.current = { key: targetKey, attempts };
+    if (attempts >= 3) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `Could not open detail for ${target.resourceKind} ${target.namespace}/${target.resourceName}: not in snapshot after ${attempts} polls`,
+      );
+      filters.clearTarget();
+      targetAttemptRef.current = null;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.target, view]);
+  }, [filters.target, view, rawSandboxes, rawClaims, rawWarmPools, rawTemplates]);
 
   const toggleRow = (row: { namespace: string; name: string }) => {
     const key = keyOf(row);
@@ -759,16 +723,20 @@ export function InventorySection({
         <div className="mb-2 flex items-center justify-end gap-2 text-[11px] text-muted-foreground">
           <label className="flex items-center gap-1.5">
             owner
-            <select
-              className="h-7 rounded-md border border-border bg-background px-2 text-xs"
-              value={ownerFilter}
-              onChange={(event) => setOwnerFilter(event.target.value)}
+            <Select
+              value={ownerFilter || "__all"}
+              onValueChange={(value) => setOwnerFilter(value === "__all" ? "" : value)}
             >
-              <option value="">all</option>
-              <option value="direct">direct</option>
-              <option value="claim">claim</option>
-              <option value="warm-pool">warm-pool</option>
-            </select>
+              <SelectTrigger className="h-7 w-[8rem] text-xs" aria-label="Filter sandboxes by owner kind">
+                <SelectValue placeholder="all" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all">all</SelectItem>
+                <SelectItem value="direct">direct</SelectItem>
+                <SelectItem value="claim">claim</SelectItem>
+                <SelectItem value="warm-pool">warm-pool</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
         </div>
       )}
@@ -842,15 +810,3 @@ export function InventorySection({
   );
 }
 
-function viewForKind(kind: SandboxResourceKind): InventoryView {
-  switch (kind) {
-    case "Sandbox":
-      return "sandboxes";
-    case "SandboxClaim":
-      return "claims";
-    case "SandboxWarmPool":
-      return "warm-pools";
-    case "SandboxTemplate":
-      return "templates";
-  }
-}

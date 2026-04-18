@@ -52,24 +52,21 @@ export function getTemplateRefName(
   owners?: { claims: RawSandboxClaim[]; warmPools: RawSandboxWarmPool[] },
 ): string | undefined {
   const controller = getControllerOwner(sandbox.metadata.ownerReferences);
-  if (owners && controller?.name) {
+
+  if (owners && controller?.name && (controller.kind === "SandboxClaim" || controller.kind === "SandboxWarmPool")) {
     const namespace = getNamespace(sandbox.metadata);
     if (controller.kind === "SandboxClaim") {
       const claim = owners.claims.find(
         (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === controller.name,
       );
-      if (claim?.spec.sandboxTemplateRef.name) {
-        return claim.spec.sandboxTemplateRef.name;
-      }
-    } else if (controller.kind === "SandboxWarmPool") {
-      const warmPool = owners.warmPools.find(
-        (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === controller.name,
-      );
-      if (warmPool?.spec.sandboxTemplateRef.name) {
-        return warmPool.spec.sandboxTemplateRef.name;
-      }
+      return claim?.spec.sandboxTemplateRef.name || undefined;
     }
+    const warmPool = owners.warmPools.find(
+      (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === controller.name,
+    );
+    return warmPool?.spec.sandboxTemplateRef.name || undefined;
   }
+
   return sandbox.metadata.annotations?.[SANDBOX_TEMPLATE_REF_ANNOTATION];
 }
 
