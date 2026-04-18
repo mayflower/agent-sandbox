@@ -1,4 +1,4 @@
-import { computeLiveOverview } from "@agent-sandbox/dashboard-shared";
+import { computeLiveOverview, type SandboxResourceKind } from "@agent-sandbox/dashboard-shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Boxes,
@@ -73,6 +73,15 @@ function AppContent() {
   const [paused, setPaused] = useState(false);
   const [view, setView] = useState<View>("overview");
   const interval: number | false = paused ? false : POLL_MS;
+
+  useEffect(() => {
+    const target = filters.target;
+    if (!target) return;
+    const desired = viewForKind(target.resourceKind);
+    if (view !== desired) {
+      setView(desired);
+    }
+  }, [filters.target, view]);
 
   const capabilitiesQuery = useQuery({ queryKey: ["capabilities"], queryFn: api.capabilities, refetchInterval: interval });
   const sandboxesQuery = useQuery({ queryKey: ["sandboxes"], queryFn: api.sandboxes, refetchInterval: interval });
@@ -497,6 +506,19 @@ function TopBar({
       </div>
     </header>
   );
+}
+
+function viewForKind(kind: SandboxResourceKind): InventoryView {
+  switch (kind) {
+    case "Sandbox":
+      return "sandboxes";
+    case "SandboxClaim":
+      return "claims";
+    case "SandboxWarmPool":
+      return "warm-pools";
+    case "SandboxTemplate":
+      return "templates";
+  }
 }
 
 function formatRelative(updatedAt: number, nowMs: number): string {
