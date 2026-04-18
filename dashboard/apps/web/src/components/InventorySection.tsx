@@ -154,8 +154,11 @@ function DataTable<T extends { namespace: string; name: string }>({
   const table = useReactTable({
     data,
     columns,
+    getRowId: (row) => keyOf(row),
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
+    autoResetPageIndex: false,
+    autoResetExpanded: false,
     initialState: { pagination: { pageSize: PAGE_SIZE } },
   });
 
