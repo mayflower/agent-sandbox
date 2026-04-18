@@ -34,6 +34,15 @@ export function EventsFeed({ events }: { events: EventView[] }) {
     return enriched.slice(0, MAX_EVENTS);
   }, [events, cutoff, filters.namespace, filters.search]);
 
+  if (recent.length === 0) {
+    return (
+      <div className="flex items-center justify-between px-1 py-0.5 text-[11px] text-slate-500 dark:text-slate-500">
+        <span className="font-semibold uppercase tracking-wider">Recent events</span>
+        <span>none · 15m</span>
+      </div>
+    );
+  }
+
   return (
     <Card>
       <div className="flex items-baseline justify-between gap-3">
@@ -42,10 +51,7 @@ export function EventsFeed({ events }: { events: EventView[] }) {
           15m · {recent.length}
         </span>
       </div>
-      {recent.length === 0 ? (
-        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">No events in the last 15 minutes.</p>
-      ) : (
-        <ul className="mt-1.5 max-h-[18rem] space-y-1 overflow-y-auto pr-1">
+      <ul className="mt-1.5 max-h-[18rem] space-y-1 overflow-y-auto pr-1">
           {recent.map(({ event, timestamp }, index) => {
             const warning = event.type === "Warning";
             const ageSeconds = Math.max(0, Math.floor((now - timestamp) / 1000));
@@ -90,8 +96,7 @@ export function EventsFeed({ events }: { events: EventView[] }) {
               </li>
             );
           })}
-        </ul>
-      )}
+      </ul>
     </Card>
   );
 }

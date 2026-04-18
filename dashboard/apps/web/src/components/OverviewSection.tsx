@@ -23,22 +23,28 @@ interface KPIProps {
 
 function KPI({ label, value, hint, tone = "neutral" }: KPIProps) {
   return (
-    <Card className="py-2" title={hint}>
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-        {label}
+    <Card className="py-1.5" title={hint}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+          {label}
+        </span>
+        <span
+          className={cn(
+            "text-lg font-semibold tabular-nums leading-none",
+            tone === "danger" && "text-rose-700 dark:text-rose-300",
+            tone === "warning" && "text-amber-700 dark:text-amber-300",
+            tone === "success" && "text-emerald-700 dark:text-emerald-300",
+            tone === "neutral" && "text-slate-900 dark:text-slate-100",
+          )}
+        >
+          {value}
+        </span>
       </div>
-      <div
-        className={cn(
-          "mt-0.5 text-xl font-semibold tabular-nums leading-tight",
-          tone === "danger" && "text-rose-700 dark:text-rose-300",
-          tone === "warning" && "text-amber-700 dark:text-amber-300",
-          tone === "success" && "text-emerald-700 dark:text-emerald-300",
-          tone === "neutral" && "text-slate-900 dark:text-slate-100",
-        )}
-      >
-        {value}
-      </div>
-      {hint && <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{hint}</p>}
+      {hint && (
+        <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400" title={hint}>
+          {hint}
+        </p>
+      )}
     </Card>
   );
 }
