@@ -1,39 +1,57 @@
-import type { PropsWithChildren } from "react";
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from "../../lib/utils.js";
+import { cn } from "@/lib/utils";
 
-export type BadgeTone = "neutral" | "success" | "warning" | "danger" | "info";
+const badgeVariants = cva(
+  "inline-flex items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  {
+    variants: {
+      tone: {
+        neutral:
+          "border-border bg-muted text-muted-foreground",
+        success:
+          "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        warning:
+          "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        danger:
+          "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+        info:
+          "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+        outline: "text-foreground",
+      },
+    },
+    defaultVariants: {
+      tone: "neutral",
+    },
+  },
+);
 
-const TONE_CLASSES: Record<BadgeTone, string> = {
-  neutral: "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200",
-  success: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200",
-  warning: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
-  danger: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-900/40 dark:text-rose-200",
-  info: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-900/40 dark:text-sky-200",
-};
-
-const DOT_CLASSES: Record<BadgeTone, string> = {
-  neutral: "bg-slate-400",
+const DOT_CLASSES: Record<NonNullable<VariantProps<typeof badgeVariants>["tone"]>, string> = {
+  neutral: "bg-muted-foreground",
   success: "bg-emerald-500",
   warning: "bg-amber-500",
   danger: "bg-rose-500",
   info: "bg-sky-500",
+  outline: "bg-foreground",
 };
 
-export function Badge({
-  children,
-  tone = "neutral",
-  dot = false,
-}: PropsWithChildren<{ tone?: BadgeTone; dot?: boolean }>) {
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLSpanElement>,
+    VariantProps<typeof badgeVariants> {
+  dot?: boolean;
+}
+
+function Badge({ className, tone, dot = false, children, ...props }: BadgeProps) {
+  const resolvedTone = tone ?? "neutral";
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
-        TONE_CLASSES[tone],
+    <span className={cn(badgeVariants({ tone }), className)} {...props}>
+      {dot && (
+        <span className={cn("h-1.5 w-1.5 rounded-full", DOT_CLASSES[resolvedTone])} aria-hidden />
       )}
-    >
-      {dot && <span className={cn("h-1.5 w-1.5 rounded-full", DOT_CLASSES[tone])} aria-hidden />}
       {children}
     </span>
   );
 }
+
+export { Badge, badgeVariants };

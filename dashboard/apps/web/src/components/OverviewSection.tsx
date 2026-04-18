@@ -1,7 +1,8 @@
 import type { LiveOverview, PhaseDatum, SandboxPhase } from "@agent-sandbox/dashboard-shared";
+import { AlertTriangle } from "lucide-react";
 
-import { cn } from "../lib/utils.js";
-import { Card } from "./ui/card.js";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 const PHASE_CLASSES: Record<SandboxPhase, string> = {
   ready: "bg-emerald-500",
@@ -23,39 +24,41 @@ interface KPIProps {
 
 function KPI({ label, value, hint, tone = "neutral" }: KPIProps) {
   return (
-    <Card className="py-1.5" title={hint}>
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-          {label}
-        </span>
-        <span
+    <Card>
+      <CardContent className="flex items-baseline justify-between gap-4 p-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {label}
+          </div>
+          {hint && (
+            <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={hint}>
+              {hint}
+            </div>
+          )}
+        </div>
+        <div
           className={cn(
-            "text-lg font-semibold tabular-nums leading-none",
-            tone === "danger" && "text-rose-700 dark:text-rose-300",
-            tone === "warning" && "text-amber-700 dark:text-amber-300",
-            tone === "success" && "text-emerald-700 dark:text-emerald-300",
-            tone === "neutral" && "text-slate-900 dark:text-slate-100",
+            "shrink-0 text-2xl font-semibold leading-none tabular-nums",
+            tone === "danger" && "text-rose-600 dark:text-rose-400",
+            tone === "warning" && "text-amber-600 dark:text-amber-400",
+            tone === "success" && "text-emerald-600 dark:text-emerald-400",
+            tone === "neutral" && "text-foreground",
           )}
         >
           {value}
-        </span>
-      </div>
-      {hint && (
-        <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400" title={hint}>
-          {hint}
-        </p>
-      )}
+        </div>
+      </CardContent>
     </Card>
   );
 }
 
 function PhaseStrip({ phases, total }: { phases: PhaseDatum[]; total: number }) {
   if (total === 0) {
-    return <p className="text-xs text-slate-500 dark:text-slate-400">No sandboxes match filters.</p>;
+    return <p className="text-xs text-muted-foreground">No sandboxes match filters.</p>;
   }
   return (
     <div>
-      <div className="flex h-1.5 w-full overflow-hidden rounded bg-slate-100 dark:bg-slate-800">
+      <div className="flex h-1.5 w-full overflow-hidden rounded bg-muted">
         {phases.map((entry) => (
           <div
             key={entry.phase}
@@ -66,12 +69,12 @@ function PhaseStrip({ phases, total }: { phases: PhaseDatum[]; total: number }) 
           />
         ))}
       </div>
-      <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-700 dark:text-slate-300">
+      <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
         {phases.map((entry) => (
           <li key={entry.phase} className="flex items-center gap-1 tabular-nums">
             <span className={cn("h-1.5 w-1.5 rounded-full", PHASE_CLASSES[entry.phase])} aria-hidden />
             <span>{entry.label}</span>
-            <span className="font-semibold text-slate-900 dark:text-slate-100">{entry.count}</span>
+            <span className="font-semibold text-foreground">{entry.count}</span>
           </li>
         ))}
       </ul>
@@ -86,8 +89,8 @@ export function OverviewSection({ overview }: { overview: LiveOverview }) {
   const unmappedRatio = totals.totalSandboxes > 0 ? totals.unmappedSandboxes / totals.totalSandboxes : 0;
 
   return (
-    <div className="space-y-2">
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+    <div className="space-y-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <KPI
           label="Active"
           value={totals.activeSandboxes}
@@ -117,25 +120,31 @@ export function OverviewSection({ overview }: { overview: LiveOverview }) {
         />
       </div>
 
-      <Card className="py-2">
-        <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+      <Card>
+        <CardHeader className="flex-row items-baseline justify-between gap-3 space-y-0 p-3 pb-1.5">
+          <CardTitle className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Phase breakdown
-          </h2>
-          <span className="text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
+          </CardTitle>
+          <span className="text-[11px] text-muted-foreground tabular-nums">
             {totals.totalSandboxes} sandboxes
           </span>
-        </div>
-        <div className="mt-1.5">
+        </CardHeader>
+        <CardContent className="p-3 pt-0">
           <PhaseStrip phases={phaseBreakdown} total={totals.totalSandboxes} />
-        </div>
+        </CardContent>
       </Card>
 
       {unmappedRatio >= 0.5 && totals.unmappedSandboxes > 0 && (
-        <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
-          <strong>{totals.unmappedSandboxes}</strong> of {totals.totalSandboxes} sandboxes missing{" "}
-          <code className="rounded bg-amber-100 px-1 font-mono dark:bg-amber-900/60">agents.x-k8s.io/sandbox-template-ref</code>
-          {" "}— upgrade the controller and re-annotate affected workloads.
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+          <p>
+            <strong className="font-semibold">{totals.unmappedSandboxes}</strong> of {totals.totalSandboxes} sandboxes missing{" "}
+            <code className="rounded bg-amber-500/20 px-1 font-mono">agents.x-k8s.io/sandbox-template-ref</code>
+            {" "}— upgrade the controller and re-annotate affected workloads.
+          </p>
         </div>
       )}
     </div>
