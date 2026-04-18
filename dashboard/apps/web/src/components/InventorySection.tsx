@@ -14,14 +14,13 @@ import {
   useReactTable,
   type ColumnDef,
 } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ActionButton } from "@/components/ActionButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
@@ -29,15 +28,9 @@ import { cn, formatAge } from "@/lib/utils";
 
 export type InventoryView = "sandboxes" | "claims" | "warm-pools" | "templates";
 
-type Selection =
-  | {
-      title: string;
-      resourceKind: SandboxResourceKind;
-      namespace: string;
-      resourceName: string;
-      body: ReactNode;
-    }
-  | null;
+function keyOf(resource: { namespace: string; name: string }): string {
+  return `${resource.namespace}/${resource.name}`;
+}
 
 function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
   const queryClient = useQueryClient();
@@ -64,7 +57,7 @@ function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
 
   return (
     <section>
-      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Actions</h3>
+      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Actions</h4>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Delete sandbox"
@@ -96,7 +89,7 @@ function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templa
   });
   return (
     <section>
-      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Actions</h3>
+      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Actions</h4>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Delete claim"
@@ -116,20 +109,47 @@ function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templa
   );
 }
 
+function EventList({ events }: { events: EventView[] }) {
+  if (events.length === 0) {
+    return <p className="text-xs text-muted-foreground">No events for this object.</p>;
+  }
+  return (
+    <div className="space-y-1">
+      {events.map((event) => (
+        <article
+          key={`${event.resourceKind}-${event.resourceName}-${event.eventTime}-${event.reason}`}
+          className="rounded border border-border bg-background px-2 py-1"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={event.type === "Warning" ? "warning" : "info"} dot>
+              {event.reason ?? event.type ?? "Event"}
+            </Badge>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">{event.message}</p>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 const PAGE_SIZE = 15;
 
-function DataTable<T>({
+function DataTable<T extends { namespace: string; name: string }>({
   columns,
   data,
-  onSelect,
+  expandedKey,
+  onToggleRow,
   rowHighlight,
   emptyMessage,
+  renderDetail,
 }: {
   columns: ColumnDef<T>[];
   data: T[];
-  onSelect: (row: T) => void;
+  expandedKey: string | null;
+  onToggleRow: (row: T) => void;
   rowHighlight?: (row: T) => boolean;
   emptyMessage?: string;
+  renderDetail: (row: T) => ReactNode;
 }) {
   const table = useReactTable({
     data,
@@ -138,6 +158,25 @@ function DataTable<T>({
     getPaginationRowModel: getPaginationRowModel(),
     initialState: { pagination: { pageSize: PAGE_SIZE } },
   });
+
+  const expandedIndex = useMemo(() => {
+    if (!expandedKey) return -1;
+    return data.findIndex((row) => keyOf(row) === expandedKey);
+  }, [data, expandedKey]);
+
+  useEffect(() => {
+    if (expandedIndex < 0) return;
+    const targetPage = Math.floor(expandedIndex / PAGE_SIZE);
+    if (targetPage !== table.getState().pagination.pageIndex) {
+      table.setPageIndex(targetPage);
+    }
+  }, [expandedIndex, table]);
+
+  const detailRowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (expandedIndex < 0) return;
+    detailRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [expandedIndex, expandedKey]);
 
   if (data.length === 0) {
     return <p className="px-2 py-3 text-xs text-muted-foreground">{emptyMessage ?? "No matching resources."}</p>;
@@ -148,6 +187,7 @@ function DataTable<T>({
   const pageCount = table.getPageCount();
   const rangeStart = pageIndex * PAGE_SIZE + 1;
   const rangeEnd = Math.min(rangeStart + PAGE_SIZE - 1, totalRows);
+  const columnCount = columns.length;
 
   return (
     <div className="flex flex-col">
@@ -166,23 +206,53 @@ function DataTable<T>({
         <TableBody>
           {table.getRowModel().rows.map((row) => {
             const highlighted = rowHighlight?.(row.original) ?? false;
+            const rowKey = keyOf(row.original);
+            const isExpanded = rowKey === expandedKey;
             return (
-              <TableRow
-                key={row.id}
-                className={cn(
-                  "cursor-pointer text-xs",
-                  highlighted && "bg-rose-500/5 hover:bg-rose-500/10",
+              <Fragment key={row.id}>
+                <TableRow
+                  data-state={isExpanded ? "selected" : undefined}
+                  className={cn(
+                    "cursor-pointer text-xs",
+                    highlighted && "bg-rose-500/5 hover:bg-rose-500/10",
+                    isExpanded && "bg-accent/60",
+                  )}
+                  onClick={() => onToggleRow(row.original)}
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <TableCell key={cell.id} className="py-1.5">
+                      {cell.column.columnDef.cell
+                        ? flexRender(cell.column.columnDef.cell, cell.getContext())
+                        : String(cell.getValue() ?? "")}
+                    </TableCell>
+                  ))}
+                </TableRow>
+                {isExpanded && (
+                  <TableRow
+                    ref={detailRowRef}
+                    className="border-b border-border bg-muted/30 hover:bg-muted/30"
+                  >
+                    <TableCell colSpan={columnCount} className="p-0">
+                      <div className="relative px-4 py-4">
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="absolute right-2 top-2 h-6 w-6"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleRow(row.original);
+                          }}
+                          aria-label="Close detail"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                        {renderDetail(row.original)}
+                      </div>
+                    </TableCell>
+                  </TableRow>
                 )}
-                onClick={() => onSelect(row.original)}
-              >
-                {row.getVisibleCells().map((cell) => (
-                  <TableCell key={cell.id} className="py-1.5">
-                    {cell.column.columnDef.cell
-                      ? flexRender(cell.column.columnDef.cell, cell.getContext())
-                      : String(cell.getValue() ?? "")}
-                  </TableCell>
-                ))}
-              </TableRow>
+              </Fragment>
             );
           })}
         </TableBody>
@@ -225,30 +295,204 @@ function DataTable<T>({
   );
 }
 
-function EventList({ events }: { events: EventView[] }) {
+function SandboxDetail({
+  sandbox,
+  claim,
+  events,
+}: {
+  sandbox: SandboxLiveView;
+  claim: ClaimLiveView | undefined;
+  events: EventView[];
+}) {
   return (
-    <section>
-      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Events</h3>
-      <div className="space-y-1.5">
-        {events.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No events for this object.</p>
-        ) : (
-          events.map((event) => (
-            <article
-              key={`${event.resourceKind}-${event.resourceName}-${event.eventTime}-${event.reason}`}
-              className="rounded-md border border-border bg-card px-2 py-1.5"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={event.type === "Warning" ? "warning" : "info"} dot>
-                  {event.reason ?? event.type ?? "Event"}
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">{event.message}</p>
-            </article>
-          ))
+    <div className="grid gap-4 md:grid-cols-2">
+      <section className="space-y-3">
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Status</h4>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            <Badge tone={sandbox.effectiveReady ? "success" : "warning"} dot>
+              {sandbox.effectiveReady ? "ready" : "not ready"}
+            </Badge>
+            <Badge tone="info">{sandbox.objectState}</Badge>
+            <Badge tone="neutral">{sandbox.runtimeState}</Badge>
+            <Badge tone="neutral">age {formatAge(sandbox.ageSeconds)}</Badge>
+          </div>
+        </div>
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Runtime</h4>
+          <p className="mt-1.5 text-sm">
+            Pod {sandbox.podName ?? "missing"}
+            {sandbox.podPhase ? ` (${sandbox.podPhase})` : ""} on {sandbox.nodeName ?? "n/a"}
+            {" · "}IPs: {sandbox.podIPs.join(", ") || "none"}
+          </p>
+        </div>
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Owner</h4>
+          <p className="mt-1.5 text-sm">
+            {sandbox.ownerKind === "direct" && "Standalone (no claim / no warm pool)"}
+            {sandbox.ownerKind === "claim" && `SandboxClaim ${sandbox.claimName ?? "?"}`}
+            {sandbox.ownerKind === "warm-pool" && `SandboxWarmPool ${sandbox.warmPoolName ?? "?"}`}
+          </p>
+          {claim && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Claim state: <Badge tone={claim.effectiveReady ? "success" : "warning"}>{claim.state}</Badge>
+              {claim.readinessMismatch && (
+                <span className="ml-2 text-amber-600 dark:text-amber-400">readiness mismatch</span>
+              )}
+            </p>
+          )}
+        </div>
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Template &amp; storage
+          </h4>
+          <p className="mt-1.5 text-sm">Template {sandbox.templateRef ?? "n/a"}.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            PVCs: {sandbox.pvcNames.length > 0 ? sandbox.pvcNames.join(", ") : "none attached"}
+          </p>
+        </div>
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">kubectl</h4>
+          <pre className="mt-1.5 overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
+            kubectl describe sandbox {sandbox.name} -n {sandbox.namespace}
+          </pre>
+        </div>
+        <SandboxActions sandbox={sandbox} />
+      </section>
+      <section>
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Events</h4>
+        <div className="mt-1.5">
+          <EventList events={events} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ClaimDetail({
+  claim,
+  templateMissing,
+  events,
+}: {
+  claim: ClaimLiveView;
+  templateMissing: boolean;
+  events: EventView[];
+}) {
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <section className="space-y-3">
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Claim</h4>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            <Badge tone={claim.readinessMismatch ? "warning" : "success"} dot>
+              {claim.readinessMismatch ? "mismatch" : "aligned"}
+            </Badge>
+            <Badge tone="neutral">{claim.state}</Badge>
+            <Badge tone="neutral">age {formatAge(claim.ageSeconds)}</Badge>
+          </div>
+        </div>
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sandbox</h4>
+          <p className="mt-1.5 text-sm">
+            Sandbox {claim.sandboxName ?? "pending"} · IPs: {claim.podIPs.join(", ") || "none"}
+          </p>
+        </div>
+        {claim.rawReadyCondition && (
+          <div>
+            <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Ready condition
+            </h4>
+            <p className="mt-1.5 text-sm">
+              status={claim.rawReadyCondition.status}
+              {claim.rawReadyCondition.reason && ` · reason=${claim.rawReadyCondition.reason}`}
+              {claim.rawReadyCondition.message && ` · ${claim.rawReadyCondition.message}`}
+            </p>
+          </div>
         )}
-      </div>
-    </section>
+        <ClaimActions claim={claim} templateMissing={templateMissing} />
+      </section>
+      <section>
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Events</h4>
+        <div className="mt-1.5">
+          <EventList events={events} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WarmPoolDetail({ pool, events }: { pool: WarmPoolLiveView; events: EventView[] }) {
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <section className="space-y-3">
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Capacity</h4>
+          <div className="mt-1.5">
+            <Progress value={Math.min(100, pool.fillRatio * 100)} />
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {pool.readyReplicas} ready of {pool.desiredReplicas} desired · template {pool.templateRef}
+          </p>
+        </div>
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Members</h4>
+          {pool.memberSandboxes.length === 0 ? (
+            <p className="mt-1.5 text-xs text-muted-foreground">No member sandboxes.</p>
+          ) : (
+            <ul className="mt-1.5 space-y-1 text-sm">
+              {pool.memberSandboxes.map((member) => (
+                <li key={member.name} className="flex items-center gap-2">
+                  <Badge tone={member.ready ? "success" : "warning"} dot>
+                    {member.ready ? "ready" : "not ready"}
+                  </Badge>
+                  <span className="truncate font-mono text-xs">{member.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+      <section>
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Events</h4>
+        <div className="mt-1.5">
+          <EventList events={events} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TemplateDetail({ template, events }: { template: TemplateLiveView; events: EventView[] }) {
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <section className="space-y-3">
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Posture</h4>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            <Badge tone="info">{template.networkPolicyMode}</Badge>
+            <Badge tone={template.automountServiceAccountTokenDefaultFalse ? "success" : "warning"}>
+              {template.automountServiceAccountTokenDefaultFalse
+                ? "default false posture"
+                : "automount enabled"}
+            </Badge>
+          </div>
+        </div>
+        <div>
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Usage</h4>
+          <p className="mt-1.5 text-sm">
+            {template.activeSandboxes} sandbox{template.activeSandboxes === 1 ? "" : "es"} ·{" "}
+            {template.activeClaims} claim{template.activeClaims === 1 ? "" : "s"} ·{" "}
+            {template.activeWarmPools} warm pool{template.activeWarmPools === 1 ? "" : "s"}
+          </p>
+        </div>
+      </section>
+      <section>
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Events</h4>
+        <div className="mt-1.5">
+          <EventList events={events} />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -263,7 +507,6 @@ export function InventorySection({
   rawWarmPools,
   rawTemplates,
   events,
-  onRequestView,
 }: {
   view: InventoryView;
   sandboxes: SandboxLiveView[];
@@ -275,21 +518,21 @@ export function InventorySection({
   rawWarmPools: WarmPoolLiveView[];
   rawTemplates: TemplateLiveView[];
   events: EventView[];
-  onRequestView: (view: InventoryView) => void;
+  onRequestView?: (view: InventoryView) => void;
 }) {
   const filters = useFilters();
   const [ownerFilter, setOwnerFilter] = useState("");
-  const [selected, setSelected] = useState<Selection>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
   const brokenOnly = filters.brokenOnly;
 
   const claimOf = useMemo(() => {
     const map = new Map<string, ClaimLiveView>();
-    for (const claim of claims) {
+    for (const claim of rawClaims) {
       map.set(`${claim.namespace}/${claim.name}`, claim);
     }
     return map;
-  }, [claims]);
+  }, [rawClaims]);
 
   const templatePresence = useMemo(() => {
     const set = new Set<string>();
@@ -343,9 +586,22 @@ export function InventorySection({
         ),
       },
       { header: "Age", accessorFn: (sandbox) => formatAge(sandbox.ageSeconds) },
+      {
+        header: "",
+        id: "chevron",
+        cell: ({ row }) => (
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 text-muted-foreground transition-transform",
+              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
+            )}
+            aria-hidden
+          />
+        ),
+      },
     );
     return columns;
-  }, [showTemplateColumn]);
+  }, [showTemplateColumn, expandedKey]);
 
   const claimColumns = useMemo<ColumnDef<ClaimLiveView>[]>(
     () => [
@@ -367,8 +623,21 @@ export function InventorySection({
         ),
       },
       { header: "Mismatch", accessorFn: (claim) => (claim.readinessMismatch ? "yes" : "no") },
+      {
+        header: "",
+        id: "chevron",
+        cell: ({ row }) => (
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 text-muted-foreground transition-transform",
+              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
+            )}
+            aria-hidden
+          />
+        ),
+      },
     ],
-    [],
+    [expandedKey],
   );
 
   const warmPoolColumns = useMemo<ColumnDef<WarmPoolLiveView>[]>(
@@ -393,8 +662,21 @@ export function InventorySection({
           </Badge>
         ),
       },
+      {
+        header: "",
+        id: "chevron",
+        cell: ({ row }) => (
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 text-muted-foreground transition-transform",
+              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
+            )}
+            aria-hidden
+          />
+        ),
+      },
     ],
-    [],
+    [expandedKey],
   );
 
   const templateColumns = useMemo<ColumnDef<TemplateLiveView>[]>(
@@ -413,238 +695,60 @@ export function InventorySection({
       { header: "Claims", accessorKey: "activeClaims" },
       { header: "Sandboxes", accessorKey: "activeSandboxes" },
       { header: "Warm Pools", accessorKey: "activeWarmPools" },
+      {
+        header: "",
+        id: "chevron",
+        cell: ({ row }) => (
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 text-muted-foreground transition-transform",
+              keyOf(row.original) === expandedKey ? "rotate-180" : "-rotate-90",
+            )}
+            aria-hidden
+          />
+        ),
+      },
     ],
-    [],
+    [expandedKey],
   );
 
-  const openSandbox = (sandbox: SandboxLiveView) => {
-    const claim = sandbox.claimName ? claimOf.get(`${sandbox.namespace}/${sandbox.claimName}`) : undefined;
-    setSelected({
-      title: sandbox.name,
-      namespace: sandbox.namespace,
-      resourceKind: "Sandbox",
-      resourceName: sandbox.name,
-      body: (
-        <div className="space-y-4">
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Status</h3>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Badge tone={sandbox.effectiveReady ? "success" : "warning"} dot>
-                {sandbox.effectiveReady ? "ready" : "not ready"}
-              </Badge>
-              <Badge tone="info">{sandbox.objectState}</Badge>
-              <Badge tone="neutral">{sandbox.runtimeState}</Badge>
-              <Badge tone="neutral">age {formatAge(sandbox.ageSeconds)}</Badge>
-            </div>
-          </section>
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Runtime</h3>
-            <p className="mt-2 text-sm">
-              Pod {sandbox.podName ?? "missing"}
-              {sandbox.podPhase ? ` (${sandbox.podPhase})` : ""} on {sandbox.nodeName ?? "n/a"}
-              {" · "}IPs: {sandbox.podIPs.join(", ") || "none"}
-            </p>
-          </section>
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Owner</h3>
-            <p className="mt-2 text-sm">
-              {sandbox.ownerKind === "direct" && "Standalone (no claim / no warm pool)"}
-              {sandbox.ownerKind === "claim" && `SandboxClaim ${sandbox.claimName ?? "?"}`}
-              {sandbox.ownerKind === "warm-pool" && `SandboxWarmPool ${sandbox.warmPoolName ?? "?"}`}
-            </p>
-            {claim && (
-              <p className="mt-1 text-sm text-muted-foreground">
-                Claim state:{" "}
-                <Badge tone={claim.effectiveReady ? "success" : "warning"}>{claim.state}</Badge>
-                {claim.readinessMismatch && (
-                  <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">readiness mismatch</span>
-                )}
-              </p>
-            )}
-          </section>
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Template &amp; storage
-            </h3>
-            <p className="mt-2 text-sm">Template {sandbox.templateRef ?? "n/a"}.</p>
-            <p className="mt-1 text-sm">
-              PVCs: {sandbox.pvcNames.length > 0 ? sandbox.pvcNames.join(", ") : "none attached"}
-            </p>
-          </section>
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">kubectl</h3>
-            <pre className="mt-2 overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
-              kubectl describe sandbox {sandbox.name} -n {sandbox.namespace}
-            </pre>
-          </section>
-          <SandboxActions sandbox={sandbox} />
-        </div>
-      ),
-    });
-  };
-
-  const openClaim = (claim: ClaimLiveView) => {
-    setSelected({
-      title: claim.name,
-      namespace: claim.namespace,
-      resourceKind: "SandboxClaim",
-      resourceName: claim.name,
-      body: (
-        <div className="space-y-4">
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Claim</h3>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Badge tone={claim.readinessMismatch ? "warning" : "success"} dot>
-                {claim.readinessMismatch ? "mismatch" : "aligned"}
-              </Badge>
-              <Badge tone="neutral">{claim.state}</Badge>
-              <Badge tone="neutral">age {formatAge(claim.ageSeconds)}</Badge>
-            </div>
-          </section>
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sandbox</h3>
-            <p className="mt-2 text-sm">
-              Sandbox {claim.sandboxName ?? "pending"} · IPs: {claim.podIPs.join(", ") || "none"}
-            </p>
-          </section>
-          {claim.rawReadyCondition && (
-            <section>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Ready condition
-              </h3>
-              <p className="mt-2 text-sm">
-                status={claim.rawReadyCondition.status}
-                {claim.rawReadyCondition.reason && ` · reason=${claim.rawReadyCondition.reason}`}
-                {claim.rawReadyCondition.message && ` · ${claim.rawReadyCondition.message}`}
-              </p>
-            </section>
-          )}
-          <ClaimActions
-            claim={claim}
-            templateMissing={!templatePresence.has(`${claim.namespace}/${claim.templateRef}`)}
-          />
-        </div>
-      ),
-    });
-  };
-
-  const openWarmPool = (warmPool: WarmPoolLiveView) => {
-    setSelected({
-      title: warmPool.name,
-      namespace: warmPool.namespace,
-      resourceKind: "SandboxWarmPool",
-      resourceName: warmPool.name,
-      body: (
-        <div className="space-y-4">
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Capacity
-            </h3>
-            <div className="mt-2">
-              <Progress value={Math.min(100, warmPool.fillRatio * 100)} />
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {warmPool.readyReplicas} ready of {warmPool.desiredReplicas} desired · template{" "}
-              {warmPool.templateRef}
-            </p>
-          </section>
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Members
-            </h3>
-            {warmPool.memberSandboxes.length === 0 ? (
-              <p className="mt-2 text-xs text-muted-foreground">No member sandboxes.</p>
-            ) : (
-              <ul className="mt-2 space-y-1 text-sm">
-                {warmPool.memberSandboxes.map((member) => (
-                  <li key={member.name} className="flex items-center gap-2">
-                    <Badge tone={member.ready ? "success" : "warning"} dot>
-                      {member.ready ? "ready" : "not ready"}
-                    </Badge>
-                    <span className="truncate font-mono text-xs">{member.name}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
-      ),
-    });
-  };
-
-  const openTemplate = (template: TemplateLiveView) => {
-    setSelected({
-      title: template.name,
-      namespace: template.namespace,
-      resourceKind: "SandboxTemplate",
-      resourceName: template.name,
-      body: (
-        <div className="space-y-4">
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Posture</h3>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Badge tone="info">{template.networkPolicyMode}</Badge>
-              <Badge tone={template.automountServiceAccountTokenDefaultFalse ? "success" : "warning"}>
-                {template.automountServiceAccountTokenDefaultFalse
-                  ? "default false posture"
-                  : "automount enabled"}
-              </Badge>
-            </div>
-          </section>
-          <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Usage</h3>
-            <p className="mt-2 text-sm">
-              {template.activeSandboxes} sandbox{template.activeSandboxes === 1 ? "" : "es"} ·{" "}
-              {template.activeClaims} claim{template.activeClaims === 1 ? "" : "s"} ·{" "}
-              {template.activeWarmPools} warm pool{template.activeWarmPools === 1 ? "" : "s"}
-            </p>
-          </section>
-        </div>
-      ),
-    });
-  };
+  useEffect(() => {
+    setExpandedKey(null);
+  }, [view]);
 
   useEffect(() => {
     const target = filters.target;
     if (!target) return;
-    const desired = viewForKind(target.resourceKind);
-    if (desired !== view) {
-      onRequestView(desired);
-      return;
-    }
-    if (target.resourceKind === "Sandbox") {
-      const match = rawSandboxes.find(
-        (sandbox) => sandbox.namespace === target.namespace && sandbox.name === target.resourceName,
+    const targetView = viewForKind(target.resourceKind);
+    if (targetView !== view) return;
+    const inView = (() => {
+      const lookup = {
+        Sandbox: rawSandboxes,
+        SandboxClaim: rawClaims,
+        SandboxWarmPool: rawWarmPools,
+        SandboxTemplate: rawTemplates,
+      }[target.resourceKind];
+      return lookup?.find(
+        (row) => row.namespace === target.namespace && row.name === target.resourceName,
       );
-      if (match) openSandbox(match);
-    } else if (target.resourceKind === "SandboxClaim") {
-      const match = rawClaims.find(
-        (claim) => claim.namespace === target.namespace && claim.name === target.resourceName,
-      );
-      if (match) openClaim(match);
-    } else if (target.resourceKind === "SandboxWarmPool") {
-      const match = rawWarmPools.find(
-        (warmPool) => warmPool.namespace === target.namespace && warmPool.name === target.resourceName,
-      );
-      if (match) openWarmPool(match);
-    } else if (target.resourceKind === "SandboxTemplate") {
-      const match = rawTemplates.find(
-        (template) => template.namespace === target.namespace && template.name === target.resourceName,
-      );
-      if (match) openTemplate(match);
+    })();
+    if (inView) {
+      setExpandedKey(keyOf(inView));
     }
     filters.clearTarget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.target, view]);
 
-  const selectedEvents = selected
-    ? events.filter(
-        (event) =>
-          event.namespace === selected.namespace &&
-          event.resourceKind === selected.resourceKind &&
-          event.resourceName === selected.resourceName,
-      )
-    : [];
+  const toggleRow = (row: { namespace: string; name: string }) => {
+    const key = keyOf(row);
+    setExpandedKey((prev) => (prev === key ? null : key));
+  };
+
+  const eventsFor = (kind: SandboxResourceKind, namespace: string, name: string) =>
+    events.filter(
+      (event) =>
+        event.resourceKind === kind && event.namespace === namespace && event.resourceName === name,
+    );
 
   return (
     <>
@@ -670,54 +774,67 @@ export function InventorySection({
         <DataTable
           columns={sandboxColumns}
           data={filteredSandboxes}
-          onSelect={openSandbox}
+          expandedKey={expandedKey}
+          onToggleRow={toggleRow}
           rowHighlight={(sandbox) => !sandbox.effectiveReady}
           emptyMessage={brokenOnly ? "No broken sandboxes match." : "No sandboxes match."}
+          renderDetail={(sandbox) => (
+            <SandboxDetail
+              sandbox={sandbox}
+              claim={sandbox.claimName ? claimOf.get(`${sandbox.namespace}/${sandbox.claimName}`) : undefined}
+              events={eventsFor("Sandbox", sandbox.namespace, sandbox.name)}
+            />
+          )}
         />
       )}
       {view === "claims" && (
         <DataTable
           columns={claimColumns}
           data={claims}
-          onSelect={openClaim}
+          expandedKey={expandedKey}
+          onToggleRow={toggleRow}
           rowHighlight={(claim) => !claim.effectiveReady || claim.readinessMismatch}
           emptyMessage={brokenOnly ? "No broken claims." : "No claims match."}
+          renderDetail={(claim) => (
+            <ClaimDetail
+              claim={claim}
+              templateMissing={!templatePresence.has(`${claim.namespace}/${claim.templateRef}`)}
+              events={eventsFor("SandboxClaim", claim.namespace, claim.name)}
+            />
+          )}
         />
       )}
       {view === "warm-pools" && (
         <DataTable
           columns={warmPoolColumns}
           data={warmPools}
-          onSelect={openWarmPool}
-          rowHighlight={(warmPool) => warmPool.readyReplicas < warmPool.desiredReplicas}
+          expandedKey={expandedKey}
+          onToggleRow={toggleRow}
+          rowHighlight={(pool) => pool.readyReplicas < pool.desiredReplicas}
           emptyMessage={brokenOnly ? "No underfilled warm pools." : "No warm pools match."}
+          renderDetail={(pool) => (
+            <WarmPoolDetail
+              pool={pool}
+              events={eventsFor("SandboxWarmPool", pool.namespace, pool.name)}
+            />
+          )}
         />
       )}
       {view === "templates" && (
         <DataTable
           columns={templateColumns}
           data={templates}
-          onSelect={openTemplate}
+          expandedKey={expandedKey}
+          onToggleRow={toggleRow}
           emptyMessage="No templates match."
+          renderDetail={(template) => (
+            <TemplateDetail
+              template={template}
+              events={eventsFor("SandboxTemplate", template.namespace, template.name)}
+            />
+          )}
         />
       )}
-
-      <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <SheetContent side="right" className="w-full max-w-xl overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle className="font-mono text-base">{selected?.title ?? ""}</SheetTitle>
-            {selected && (
-              <p className="text-xs text-muted-foreground">
-                {selected.resourceKind} · {selected.namespace}
-              </p>
-            )}
-          </SheetHeader>
-          <div className="mt-4 space-y-5">
-            {selected?.body}
-            <EventList events={selectedEvents} />
-          </div>
-        </SheetContent>
-      </Sheet>
     </>
   );
 }
