@@ -178,7 +178,7 @@ export function normalizeSandboxes(snapshot: InventorySnapshot, now = new Date()
         name: sandbox.metadata.name,
         ageSeconds: getAgeSeconds(sandbox.metadata.creationTimestamp, now),
         ...ownership,
-        ...withOptional("templateRef", getTemplateRefName(sandbox)),
+        ...withOptional("templateRef", getTemplateRefName(sandbox, { claims: snapshot.claims, warmPools: snapshot.warmPools })),
         objectState,
         runtimeState,
         effectiveReady: objectState === "active" && runtimeState === "ready",

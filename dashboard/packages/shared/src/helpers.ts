@@ -5,6 +5,8 @@ import type {
   RawOwnerReference,
   RawPod,
   RawSandbox,
+  RawSandboxClaim,
+  RawSandboxWarmPool,
   RawService,
 } from "./types.js";
 
@@ -45,7 +47,29 @@ export function getPodName(sandbox: RawSandbox): string {
   return sandbox.metadata.annotations?.[SANDBOX_POD_NAME_ANNOTATION] ?? sandbox.metadata.name;
 }
 
-export function getTemplateRefName(sandbox: RawSandbox): string | undefined {
+export function getTemplateRefName(
+  sandbox: RawSandbox,
+  owners?: { claims: RawSandboxClaim[]; warmPools: RawSandboxWarmPool[] },
+): string | undefined {
+  const controller = getControllerOwner(sandbox.metadata.ownerReferences);
+  if (owners && controller?.name) {
+    const namespace = getNamespace(sandbox.metadata);
+    if (controller.kind === "SandboxClaim") {
+      const claim = owners.claims.find(
+        (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === controller.name,
+      );
+      if (claim?.spec.sandboxTemplateRef.name) {
+        return claim.spec.sandboxTemplateRef.name;
+      }
+    } else if (controller.kind === "SandboxWarmPool") {
+      const warmPool = owners.warmPools.find(
+        (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === controller.name,
+      );
+      if (warmPool?.spec.sandboxTemplateRef.name) {
+        return warmPool.spec.sandboxTemplateRef.name;
+      }
+    }
+  }
   return sandbox.metadata.annotations?.[SANDBOX_TEMPLATE_REF_ANNOTATION];
 }
 
