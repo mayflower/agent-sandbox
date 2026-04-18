@@ -210,6 +210,8 @@ export interface InventoryProvider {
   reconcileSandbox?(namespace: string, name: string): Promise<void>;
 }
 
+export type SandboxResourceKind = "Sandbox" | "SandboxClaim" | "SandboxWarmPool" | "SandboxTemplate";
+
 export interface ActionResult {
   kind: "Sandbox" | "SandboxClaim";
   namespace: string;
@@ -362,7 +364,7 @@ export interface ProblemView {
   kind: ProblemKind;
   severity: "info" | "warning" | "error";
   namespace: string;
-  resourceKind: "Sandbox" | "SandboxClaim" | "SandboxWarmPool" | "SandboxTemplate";
+  resourceKind: SandboxResourceKind;
   resourceName: string;
   summary: string;
 }

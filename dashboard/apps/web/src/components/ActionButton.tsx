@@ -25,15 +25,15 @@ export function ActionButton({
   const [busy, setBusy] = useState(false);
 
   const baseClass =
-    "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium border transition disabled:cursor-not-allowed disabled:opacity-50";
+    "inline-flex items-center gap-2 rounded border px-2 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50";
   const toneClass =
     tone === "danger"
-      ? "border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100"
-      : "border-slate-300 bg-white text-slate-800 hover:bg-slate-50";
+      ? "border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100 dark:border-rose-800 dark:bg-rose-900/40 dark:text-rose-200 dark:hover:bg-rose-900/60"
+      : "border-slate-300 bg-white text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800";
   const armedClass =
     tone === "danger"
       ? "border-rose-600 bg-rose-600 text-white hover:bg-rose-700"
-      : "border-slate-900 bg-slate-900 text-white hover:bg-slate-800";
+      : "border-slate-900 bg-slate-900 text-white hover:bg-slate-800 dark:border-slate-200 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-slate-100";
 
   const handleClick = async () => {
     if (!armed) {
@@ -68,13 +68,13 @@ export function ActionButton({
           <button
             type="button"
             onClick={() => setArmed(false)}
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
           >
             cancel
           </button>
         )}
       </div>
-      {error && <p className="text-xs text-rose-700">{error}</p>}
+      {error && <p className="text-[11px] text-rose-700 dark:text-rose-300">{error}</p>}
     </div>
   );
 }

@@ -1,75 +1,53 @@
 import { groupProblems, type ProblemGroup, type ProblemView } from "@agent-sandbox/dashboard-shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { api } from "../lib/api.js";
 import { useFilters } from "../lib/filters.js";
+import { useExpandable } from "../lib/useExpandable.js";
+import { cn, matchesSearch } from "../lib/utils.js";
 import { ActionButton } from "./ActionButton.js";
-import { Badge } from "./ui/badge.js";
 import { Card, CardTitle } from "./ui/card.js";
 
-function toneForSeverity(severity: ProblemView["severity"]) {
-  switch (severity) {
-    case "error":
-      return "danger" as const;
-    case "warning":
-      return "warning" as const;
-    default:
-      return "info" as const;
-  }
-}
-
-function matchesFilters(problem: ProblemView, search: string, namespace: string): boolean {
-  if (namespace && problem.namespace !== namespace) return false;
-  if (!search) return true;
-  const needle = search.toLowerCase();
-  return (
-    problem.resourceName.toLowerCase().includes(needle) ||
-    problem.namespace.toLowerCase().includes(needle)
-  );
-}
+const SEVERITY_DOT: Record<ProblemView["severity"], string> = {
+  error: "bg-rose-500",
+  warning: "bg-amber-500",
+  info: "bg-sky-500",
+};
 
 export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
   const filters = useFilters();
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const expandable = useExpandable();
 
   const filtered = useMemo(
-    () => problems.filter((problem) => matchesFilters(problem, filters.search, filters.namespace)),
+    () =>
+      problems.filter(
+        (problem) =>
+          matchesSearch(problem.resourceName, problem.namespace, filters.search) &&
+          (!filters.namespace || problem.namespace === filters.namespace),
+      ),
     [problems, filters.search, filters.namespace],
   );
   const groups = useMemo(() => groupProblems(filtered), [filtered]);
-  const errorCount = filtered.filter((problem) => problem.severity === "error").length;
-  const warningCount = filtered.filter((problem) => problem.severity === "warning").length;
-
-  const toggle = (key: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
 
   return (
     <Card aria-label="Problems" role="region">
       <div className="flex items-center justify-between gap-3">
         <CardTitle>Problems</CardTitle>
-        <Badge tone={filtered.length > 0 ? "warning" : "success"}>
-          {filtered.length === 0
-            ? "all clear"
-            : `${errorCount} error${errorCount === 1 ? "" : "s"} · ${warningCount} warning${warningCount === 1 ? "" : "s"}`}
-        </Badge>
+        <span className="text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
+          {filtered.length === 0 ? "all clear" : `${groups.length} group${groups.length === 1 ? "" : "s"}`}
+        </span>
       </div>
-      <div className="mt-3 max-h-[32rem] space-y-2 overflow-y-auto pr-1" aria-live="polite">
+      <div className="mt-2 max-h-[32rem] space-y-1.5 overflow-y-auto pr-1" aria-live="polite">
         {groups.length === 0 ? (
-          <p className="text-sm text-slate-600">No matching problems.</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">No matching problems.</p>
         ) : (
           groups.map((group) => (
             <ProblemGroupCard
               key={group.kind}
               group={group}
-              expanded={expanded.has(group.kind)}
-              onToggle={() => toggle(group.kind)}
+              expanded={expandable.has(group.kind)}
+              onToggle={() => expandable.toggle(group.kind)}
               onItemClick={(item) =>
                 filters.focus({
                   namespace: item.namespace,
@@ -102,27 +80,25 @@ function ProblemGroupCard({
     onSuccess: () => queryClient.invalidateQueries(),
   });
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white/70">
+    <article className="rounded border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-start gap-3 p-3 text-left hover:bg-emerald-50/60"
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800"
         aria-expanded={expanded}
       >
-        <Badge tone={toneForSeverity(group.severity)}>{group.severity}</Badge>
-        <div className="flex-1">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-sm font-semibold text-slate-800">{group.summary}</span>
-            <span className="text-xs text-slate-500">{expanded ? "hide" : "show"}</span>
-          </div>
-          <p className="mt-0.5 text-xs text-slate-500">
-            {group.count} affected · {group.items[0]?.resourceKind}
-          </p>
+        <span className={cn("h-1.5 w-1.5 rounded-full", SEVERITY_DOT[group.severity])} aria-hidden />
+        <div className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className="truncate text-xs font-medium text-slate-800 dark:text-slate-200">
+            {group.summary}
+          </span>
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">{group.items[0]?.resourceKind}</span>
         </div>
-        <Badge tone="neutral">{group.count}</Badge>
+        <span className="text-[11px] tabular-nums text-slate-600 dark:text-slate-300">{group.count}</span>
+        <span className="text-[11px] text-slate-400">{expanded ? "−" : "+"}</span>
       </button>
       {group.kind === "runtime-missing" && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 px-2 py-1.5 dark:border-slate-800">
           <ActionButton
             label={`Delete ${group.count} orphaned sandbox${group.count === 1 ? "" : "es"}`}
             confirmLabel="Confirm bulk delete"
@@ -131,27 +107,27 @@ function ProblemGroupCard({
             onConfirm={() => cleanup.mutateAsync()}
           />
           {cleanup.data && (
-            <span className="text-xs text-slate-600">
+            <span className="text-[11px] text-slate-600 dark:text-slate-400">
               Deleted {cleanup.data.results.filter((result) => result.ok).length} of {cleanup.data.attempted}.
             </span>
           )}
         </div>
       )}
       {expanded && (
-        <ul className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+        <ul className="border-t border-slate-200 bg-slate-50 py-1 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
           {group.items.map((item) => (
             <li key={`${item.namespace}/${item.resourceName}`}>
               <button
                 type="button"
                 onClick={() => onItemClick(item)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-1 text-left hover:bg-white"
+                className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-left hover:bg-white dark:hover:bg-slate-900"
               >
-                <span className="truncate">
-                  <span className="text-slate-500">{item.namespace}</span>
-                  <span className="mx-1 text-slate-400">/</span>
+                <span className="truncate font-mono">
+                  <span className="text-slate-500 dark:text-slate-500">{item.namespace}</span>
+                  <span className="mx-0.5 text-slate-400">/</span>
                   <span>{item.resourceName}</span>
                 </span>
-                <span className="text-xs text-slate-400">open</span>
+                <span className="text-[10px] text-slate-400">open</span>
               </button>
             </li>
           ))}

@@ -1,8 +1,9 @@
+import type { SandboxResourceKind } from "@agent-sandbox/dashboard-shared";
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 
 export interface SandboxTarget {
   namespace: string;
-  resourceKind: "Sandbox" | "SandboxClaim" | "SandboxWarmPool" | "SandboxTemplate";
+  resourceKind: SandboxResourceKind;
   resourceName: string;
 }
 

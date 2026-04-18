@@ -1,4 +1,4 @@
-import type { PropsWithChildren } from "react";
+import { useEffect, type PropsWithChildren } from "react";
 
 import { cn } from "../../lib/utils.js";
 
@@ -8,6 +8,15 @@ export function Drawer({
   title,
   onClose,
 }: PropsWithChildren<{ open: boolean; title: string; onClose: () => void }>) {
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
   if (!open) {
     return null;
   }
@@ -21,16 +30,13 @@ export function Drawer({
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") onClose();
-      }}
     >
-      <aside className="h-full w-full max-w-xl overflow-y-auto border-l border-slate-200 bg-white p-6 shadow-2xl">
+      <aside className="h-full w-full max-w-xl overflow-y-auto border-l border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-4 flex items-start justify-between gap-3">
-          <h2 className="text-2xl text-slate-900">{title}</h2>
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{title}</h2>
           <button
             type="button"
-            className="rounded-full border border-slate-300 px-3 py-1 text-sm hover:bg-white"
+            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
             onClick={onClose}
             aria-label="Close detail panel"
           >

@@ -1,32 +1,18 @@
-import type { EventView } from "@agent-sandbox/dashboard-shared";
+import type { EventView, SandboxResourceKind } from "@agent-sandbox/dashboard-shared";
 import { useMemo } from "react";
 
-import { useFilters, type SandboxTarget } from "../lib/filters.js";
-import { Badge } from "./ui/badge.js";
+import { useFilters } from "../lib/filters.js";
+import { cn, formatAge, matchesSearch } from "../lib/utils.js";
 import { Card, CardTitle } from "./ui/card.js";
 
 const RECENT_EVENT_SECONDS = 15 * 60;
 const MAX_EVENTS = 25;
-const SANDBOX_KINDS = new Set([
+const SANDBOX_KINDS = new Set<string>([
   "Sandbox",
   "SandboxClaim",
   "SandboxWarmPool",
   "SandboxTemplate",
 ]);
-
-function eventTimestamp(event: EventView): number {
-  if (!event.eventTime) return 0;
-  const parsed = Date.parse(event.eventTime);
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function formatRelative(timestamp: number, now: number): string {
-  if (!timestamp) return "";
-  const delta = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (delta < 60) return `${delta}s`;
-  if (delta < 3600) return `${Math.floor(delta / 60)}m`;
-  return `${Math.floor(delta / 3600)}h`;
-}
 
 export function EventsFeed({ events }: { events: EventView[] }) {
   const filters = useFilters();
@@ -34,69 +20,71 @@ export function EventsFeed({ events }: { events: EventView[] }) {
   const cutoff = now - RECENT_EVENT_SECONDS * 1000;
 
   const recent = useMemo(() => {
-    return events
-      .filter((event) => {
-        if (!SANDBOX_KINDS.has(event.resourceKind)) return false;
-        const timestamp = eventTimestamp(event);
-        if (timestamp === 0) return false;
-        if (timestamp < cutoff) return false;
-        if (filters.namespace && event.namespace !== filters.namespace) return false;
-        if (filters.search) {
-          const needle = filters.search.toLowerCase();
-          if (
-            !event.resourceName.toLowerCase().includes(needle) &&
-            !event.namespace.toLowerCase().includes(needle)
-          ) {
-            return false;
-          }
-        }
-        return true;
-      })
-      .sort((left, right) => eventTimestamp(right) - eventTimestamp(left))
-      .slice(0, MAX_EVENTS);
+    const enriched: Array<{ event: EventView; timestamp: number }> = [];
+    for (const event of events) {
+      if (!SANDBOX_KINDS.has(event.resourceKind)) continue;
+      if (!event.eventTime) continue;
+      const timestamp = Date.parse(event.eventTime);
+      if (Number.isNaN(timestamp) || timestamp < cutoff) continue;
+      if (filters.namespace && event.namespace !== filters.namespace) continue;
+      if (!matchesSearch(event.resourceName, event.namespace, filters.search)) continue;
+      enriched.push({ event, timestamp });
+    }
+    enriched.sort((left, right) => right.timestamp - left.timestamp);
+    return enriched.slice(0, MAX_EVENTS);
   }, [events, cutoff, filters.namespace, filters.search]);
 
   return (
     <Card>
       <div className="flex items-baseline justify-between gap-3">
         <CardTitle>Recent events</CardTitle>
-        <span className="text-xs text-slate-500 tabular-nums">
-          last 15m · {recent.length} shown
+        <span className="text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
+          15m · {recent.length}
         </span>
       </div>
       {recent.length === 0 ? (
-        <p className="mt-3 text-sm text-slate-600">No recent events in the last 15 minutes.</p>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">No events in the last 15 minutes.</p>
       ) : (
-        <ul className="mt-3 max-h-[18rem] space-y-2 overflow-y-auto pr-1">
-          {recent.map((event, index) => {
+        <ul className="mt-1.5 max-h-[18rem] space-y-1 overflow-y-auto pr-1">
+          {recent.map(({ event, timestamp }, index) => {
             const warning = event.type === "Warning";
-            const target: SandboxTarget | null = SANDBOX_KINDS.has(event.resourceKind)
-              ? {
-                  namespace: event.namespace,
-                  resourceKind: event.resourceKind as SandboxTarget["resourceKind"],
-                  resourceName: event.resourceName,
-                }
-              : null;
+            const ageSeconds = Math.max(0, Math.floor((now - timestamp) / 1000));
             return (
               <li
                 key={`${event.resourceKind}-${event.namespace}-${event.resourceName}-${event.eventTime}-${index}`}
-                className="rounded-xl border border-slate-200 bg-white/70"
+                className="rounded border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
               >
                 <button
                   type="button"
-                  onClick={() => target && filters.focus(target)}
-                  className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-emerald-50/60 disabled:cursor-default"
-                  disabled={!target}
+                  onClick={() =>
+                    filters.focus({
+                      namespace: event.namespace,
+                      resourceKind: event.resourceKind as SandboxResourceKind,
+                      resourceName: event.resourceName,
+                    })
+                  }
+                  className="flex w-full items-start gap-2 px-2 py-1 text-left hover:bg-slate-50 dark:hover:bg-slate-800"
                 >
-                  <Badge tone={warning ? "warning" : "info"}>{event.reason ?? event.type ?? "Event"}</Badge>
-                  <div className="flex-1 min-w-0">
-                    <div className="truncate text-sm font-semibold text-slate-800">
-                      {event.resourceKind} {event.resourceName}
+                  <span
+                    className={cn(
+                      "mt-1 h-1.5 w-1.5 shrink-0 rounded-full",
+                      warning ? "bg-amber-500" : "bg-sky-500",
+                    )}
+                    aria-hidden
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-1.5 text-xs">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {event.reason ?? event.type ?? "Event"}
+                      </span>
+                      <span className="truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                        {event.resourceKind} {event.resourceName}
+                      </span>
                     </div>
-                    <div className="truncate text-xs text-slate-600">{event.message}</div>
+                    <div className="truncate text-[11px] text-slate-600 dark:text-slate-400">{event.message}</div>
                   </div>
-                  <span className="shrink-0 text-xs tabular-nums text-slate-500">
-                    {formatRelative(eventTimestamp(event), now)}
+                  <span className="shrink-0 text-[10px] tabular-nums text-slate-400 dark:text-slate-500">
+                    {formatAge(ageSeconds)}
                   </span>
                 </button>
               </li>

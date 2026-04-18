@@ -20,3 +20,9 @@ export function formatAge(seconds: number): string {
 export function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
+
+export function matchesSearch(name: string, namespace: string, search: string): boolean {
+  if (!search) return true;
+  const needle = search.toLowerCase();
+  return name.toLowerCase().includes(needle) || namespace.toLowerCase().includes(needle);
+}

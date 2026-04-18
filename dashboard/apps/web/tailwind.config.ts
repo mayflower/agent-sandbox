@@ -2,6 +2,7 @@ import type { Config } from "tailwindcss";
 
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  darkMode: "class",
   theme: {
     extend: {
       colors: {
@@ -9,7 +10,7 @@ export default {
         ink: "#0f172a",
         panel: "#ffffff",
         muted: "#64748b",
-        accent: "#0f766e",
+        accent: "#334155",
         alert: "#b45309",
         danger: "#b91c1c",
       },

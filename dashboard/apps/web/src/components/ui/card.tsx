@@ -9,7 +9,11 @@ export function Card({
 }: PropsWithChildren<ComponentPropsWithoutRef<"section">>) {
   return (
     <section
-      className={cn("rounded-xl border border-slate-200 bg-white p-4 shadow-panel", className)}
+      className={cn(
+        "rounded-md border border-slate-200 bg-white p-3 shadow-panel",
+        "dark:border-slate-800 dark:bg-slate-900",
+        className,
+      )}
       {...props}
     >
       {children}
@@ -18,5 +22,14 @@ export function Card({
 }
 
 export function CardTitle({ children, className }: PropsWithChildren<{ className?: string }>) {
-  return <h2 className={cn("text-sm font-semibold uppercase tracking-wide text-slate-700", className)}>{children}</h2>;
+  return (
+    <h2
+      className={cn(
+        "text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400",
+        className,
+      )}
+    >
+      {children}
+    </h2>
+  );
 }
