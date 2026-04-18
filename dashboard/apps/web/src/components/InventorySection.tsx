@@ -1,6 +1,4 @@
-import { flexRender, getCoreRowModel, getPaginationRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import type {
-  Capabilities,
   ClaimLiveView,
   EventView,
   SandboxLiveView,
@@ -9,17 +7,27 @@ import type {
   WarmPoolLiveView,
 } from "@agent-sandbox/dashboard-shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  flexRender,
+  getCoreRowModel,
+  getPaginationRowModel,
+  useReactTable,
+  type ColumnDef,
+} from "@tanstack/react-table";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { api } from "../lib/api.js";
-import { useFilters } from "../lib/filters.js";
-import { ActionButton } from "./ActionButton.js";
-import { Badge } from "./ui/badge.js";
-import { Card, CardTitle } from "./ui/card.js";
-import { Drawer } from "./ui/drawer.js";
-import { Progress } from "./ui/progress.js";
-import { Tabs } from "./ui/tabs.js";
-import { formatAge } from "../lib/utils.js";
+import { ActionButton } from "@/components/ActionButton";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { api } from "@/lib/api";
+import { useFilters } from "@/lib/filters";
+import { cn, formatAge } from "@/lib/utils";
+
+export type InventoryView = "sandboxes" | "claims" | "warm-pools" | "templates";
 
 type Selection =
   | {
@@ -30,19 +38,6 @@ type Selection =
       body: ReactNode;
     }
   | null;
-
-function tabKeyForKind(kind: SandboxResourceKind): string {
-  switch (kind) {
-    case "Sandbox":
-      return "sandboxes";
-    case "SandboxClaim":
-      return "claims";
-    case "SandboxWarmPool":
-      return "warm-pools";
-    case "SandboxTemplate":
-      return "templates";
-  }
-}
 
 function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
   const queryClient = useQueryClient();
@@ -69,7 +64,7 @@ function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
 
   return (
     <section>
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actions</h3>
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Actions</h3>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Delete sandbox"
@@ -86,7 +81,7 @@ function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
           onConfirm={() => reconcile.mutateAsync()}
         />
       </div>
-      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+      <p className="mt-2 text-xs text-muted-foreground">
         {deleteReason} Reconcile bumps an annotation; always safe.
       </p>
     </section>
@@ -101,7 +96,7 @@ function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templa
   });
   return (
     <section>
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actions</h3>
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Actions</h3>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Delete claim"
@@ -112,7 +107,7 @@ function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templa
           onConfirm={() => del.mutateAsync()}
         />
       </div>
-      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+      <p className="mt-2 text-xs text-muted-foreground">
         {templateMissing
           ? `Template "${claim.templateRef}" is not present; safe to delete.`
           : "Template exists; dashboard only deletes claims whose template is missing."}
@@ -145,11 +140,7 @@ function DataTable<T>({
   });
 
   if (data.length === 0) {
-    return (
-      <p className="px-2 py-3 text-xs text-slate-500 dark:text-slate-400">
-        {emptyMessage ?? "No matching resources."}
-      </p>
-    );
+    return <p className="px-2 py-3 text-xs text-muted-foreground">{emptyMessage ?? "No matching resources."}</p>;
   }
 
   const totalRows = data.length;
@@ -160,75 +151,73 @@ function DataTable<T>({
 
   return (
     <div className="flex flex-col">
-      <div className="overflow-x-auto">
-        <table className="min-w-full border-collapse">
-          <thead>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <th
-                    key={header.id}
-                    className="border-b border-slate-200 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400"
-                  >
-                    {header.isPlaceholder ? null : String(header.column.columnDef.header)}
-                  </th>
+      <Table>
+        <TableHeader>
+          {table.getHeaderGroups().map((headerGroup) => (
+            <TableRow key={headerGroup.id}>
+              {headerGroup.headers.map((header) => (
+                <TableHead key={header.id} className="h-8 text-[10px] font-semibold uppercase tracking-wider">
+                  {header.isPlaceholder ? null : String(header.column.columnDef.header)}
+                </TableHead>
+              ))}
+            </TableRow>
+          ))}
+        </TableHeader>
+        <TableBody>
+          {table.getRowModel().rows.map((row) => {
+            const highlighted = rowHighlight?.(row.original) ?? false;
+            return (
+              <TableRow
+                key={row.id}
+                className={cn(
+                  "cursor-pointer text-xs",
+                  highlighted && "bg-rose-500/5 hover:bg-rose-500/10",
+                )}
+                onClick={() => onSelect(row.original)}
+              >
+                {row.getVisibleCells().map((cell) => (
+                  <TableCell key={cell.id} className="py-1.5">
+                    {cell.column.columnDef.cell
+                      ? flexRender(cell.column.columnDef.cell, cell.getContext())
+                      : String(cell.getValue() ?? "")}
+                  </TableCell>
                 ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.map((row) => {
-              const highlighted = rowHighlight?.(row.original) ?? false;
-              return (
-                <tr
-                  key={row.id}
-                  className={
-                    "cursor-pointer border-b border-slate-100 text-xs transition hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800 " +
-                    (highlighted ? "bg-rose-50/60 dark:bg-rose-900/20" : "")
-                  }
-                  onClick={() => onSelect(row.original)}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td
-                      key={cell.id}
-                      className="px-2 py-1 text-slate-800 dark:text-slate-200"
-                    >
-                      {cell.column.columnDef.cell
-                        ? flexRender(cell.column.columnDef.cell, cell.getContext())
-                        : String(cell.getValue() ?? "")}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
       {pageCount > 1 && (
-        <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-1.5 text-[11px] text-slate-500 dark:border-slate-800 dark:text-slate-400">
+        <div className="mt-2 flex items-center justify-between border-t border-border pt-1.5 text-[11px] text-muted-foreground">
           <span className="tabular-nums">
             {rangeStart}–{rangeEnd} of {totalRows}
           </span>
           <div className="flex items-center gap-1">
-            <button
+            <Button
               type="button"
+              size="icon"
+              variant="outline"
               onClick={() => table.previousPage()}
               disabled={!table.getCanPreviousPage()}
-              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              className="h-6 w-6"
+              aria-label="Previous page"
             >
-              ‹
-            </button>
+              <ChevronLeft className="h-3 w-3" />
+            </Button>
             <span className="px-1 tabular-nums">
               {pageIndex + 1}/{pageCount}
             </span>
-            <button
+            <Button
               type="button"
+              size="icon"
+              variant="outline"
               onClick={() => table.nextPage()}
               disabled={!table.getCanNextPage()}
-              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              className="h-6 w-6"
+              aria-label="Next page"
             >
-              ›
-            </button>
+              <ChevronRight className="h-3 w-3" />
+            </Button>
           </div>
         </div>
       )}
@@ -239,22 +228,22 @@ function DataTable<T>({
 function EventList({ events }: { events: EventView[] }) {
   return (
     <section>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Events</h3>
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Events</h3>
       <div className="space-y-1.5">
         {events.length === 0 ? (
-          <p className="text-xs text-slate-500 dark:text-slate-400">No events for this object.</p>
+          <p className="text-xs text-muted-foreground">No events for this object.</p>
         ) : (
           events.map((event) => (
             <article
               key={`${event.resourceKind}-${event.resourceName}-${event.eventTime}-${event.reason}`}
-              className="rounded border border-slate-200 bg-white px-2 py-1.5 dark:border-slate-800 dark:bg-slate-900"
+              className="rounded-md border border-border bg-card px-2 py-1.5"
             >
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={event.type === "Warning" ? "warning" : "info"} dot>
                   {event.reason ?? event.type ?? "Event"}
                 </Badge>
               </div>
-              <p className="mt-1 text-xs text-slate-700 dark:text-slate-300">{event.message}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{event.message}</p>
             </article>
           ))
         )}
@@ -264,7 +253,7 @@ function EventList({ events }: { events: EventView[] }) {
 }
 
 export function InventorySection({
-  capabilities,
+  view,
   sandboxes,
   claims,
   warmPools,
@@ -274,8 +263,9 @@ export function InventorySection({
   rawWarmPools,
   rawTemplates,
   events,
+  onRequestView,
 }: {
-  capabilities: Capabilities;
+  view: InventoryView;
   sandboxes: SandboxLiveView[];
   claims: ClaimLiveView[];
   warmPools: WarmPoolLiveView[];
@@ -285,15 +275,9 @@ export function InventorySection({
   rawWarmPools: WarmPoolLiveView[];
   rawTemplates: TemplateLiveView[];
   events: EventView[];
+  onRequestView: (view: InventoryView) => void;
 }) {
   const filters = useFilters();
-  const tabs = [
-    { key: "sandboxes", label: "Sandboxes" },
-    ...(capabilities.claims ? [{ key: "claims", label: "Claims" }] : []),
-    ...(capabilities.warmPools ? [{ key: "warm-pools", label: "Warm Pools" }] : []),
-    ...(capabilities.templates ? [{ key: "templates", label: "Templates" }] : []),
-  ];
-  const [activeTab, setActiveTab] = useState(tabs[0]?.key ?? "sandboxes");
   const [ownerFilter, setOwnerFilter] = useState("");
   const [selected, setSelected] = useState<Selection>(null);
 
@@ -326,45 +310,43 @@ export function InventorySection({
     return mapped / rawSandboxes.length >= 0.2;
   }, [rawSandboxes]);
 
-  const sandboxColumns = useMemo<ColumnDef<SandboxLiveView>[]>(
-    () => {
-      const columns: ColumnDef<SandboxLiveView>[] = [
-        {
-          header: "Name",
-          accessorKey: "name",
-          cell: ({ row }) => <span className="font-mono">{row.original.name}</span>,
-        },
-        { header: "Namespace", accessorKey: "namespace" },
-      ];
-      if (showTemplateColumn) {
-        columns.push({ header: "Template", accessorFn: (sandbox) => sandbox.templateRef ?? "—" });
-      }
-      columns.push(
-        { header: "Owner", accessorKey: "ownerKind" },
-        {
-          header: "State",
-          accessorKey: "runtimeState",
-          cell: ({ row }) => (
-            <Badge
-              tone={
-                row.original.effectiveReady
-                  ? "success"
-                  : row.original.runtimeState === "missing"
-                    ? "danger"
-                    : "warning"
-              }
-              dot
-            >
-              {row.original.effectiveReady ? "ready" : row.original.runtimeState}
-            </Badge>
-          ),
-        },
-        { header: "Age", accessorFn: (sandbox) => formatAge(sandbox.ageSeconds) },
-      );
-      return columns;
-    },
-    [showTemplateColumn],
-  );
+  const sandboxColumns = useMemo<ColumnDef<SandboxLiveView>[]>(() => {
+    const columns: ColumnDef<SandboxLiveView>[] = [
+      {
+        header: "Name",
+        accessorKey: "name",
+        cell: ({ row }) => <span className="font-mono">{row.original.name}</span>,
+      },
+      { header: "Namespace", accessorKey: "namespace" },
+    ];
+    if (showTemplateColumn) {
+      columns.push({ header: "Template", accessorFn: (sandbox) => sandbox.templateRef ?? "—" });
+    }
+    columns.push(
+      { header: "Owner", accessorKey: "ownerKind" },
+      {
+        header: "State",
+        accessorKey: "runtimeState",
+        cell: ({ row }) => (
+          <Badge
+            tone={
+              row.original.effectiveReady
+                ? "success"
+                : row.original.runtimeState === "missing"
+                  ? "danger"
+                  : "warning"
+            }
+            dot
+          >
+            {row.original.effectiveReady ? "ready" : row.original.runtimeState}
+          </Badge>
+        ),
+      },
+      { header: "Age", accessorFn: (sandbox) => formatAge(sandbox.ageSeconds) },
+    );
+    return columns;
+  }, [showTemplateColumn]);
+
   const claimColumns = useMemo<ColumnDef<ClaimLiveView>[]>(
     () => [
       {
@@ -384,13 +366,11 @@ export function InventorySection({
           </Badge>
         ),
       },
-      {
-        header: "Mismatch",
-        accessorFn: (claim) => (claim.readinessMismatch ? "yes" : "no"),
-      },
+      { header: "Mismatch", accessorFn: (claim) => (claim.readinessMismatch ? "yes" : "no") },
     ],
     [],
   );
+
   const warmPoolColumns = useMemo<ColumnDef<WarmPoolLiveView>[]>(
     () => [
       {
@@ -416,6 +396,7 @@ export function InventorySection({
     ],
     [],
   );
+
   const templateColumns = useMemo<ColumnDef<TemplateLiveView>[]>(
     () => [
       {
@@ -426,7 +407,8 @@ export function InventorySection({
       { header: "Network", accessorKey: "networkPolicyMode" },
       {
         header: "Automount",
-        accessorFn: (template) => (template.automountServiceAccountTokenDefaultFalse ? "default false" : "enabled"),
+        accessorFn: (template) =>
+          template.automountServiceAccountTokenDefaultFalse ? "default false" : "enabled",
       },
       { header: "Claims", accessorKey: "activeClaims" },
       { header: "Sandboxes", accessorKey: "activeSandboxes" },
@@ -445,7 +427,7 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</h3>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Status</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone={sandbox.effectiveReady ? "success" : "warning"} dot>
                 {sandbox.effectiveReady ? "ready" : "not ready"}
@@ -456,38 +438,42 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Runtime</h3>
-            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Runtime</h3>
+            <p className="mt-2 text-sm">
               Pod {sandbox.podName ?? "missing"}
               {sandbox.podPhase ? ` (${sandbox.podPhase})` : ""} on {sandbox.nodeName ?? "n/a"}
-              {" · "}
-              IPs: {sandbox.podIPs.join(", ") || "none"}
+              {" · "}IPs: {sandbox.podIPs.join(", ") || "none"}
             </p>
           </section>
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Owner</h3>
-            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Owner</h3>
+            <p className="mt-2 text-sm">
               {sandbox.ownerKind === "direct" && "Standalone (no claim / no warm pool)"}
               {sandbox.ownerKind === "claim" && `SandboxClaim ${sandbox.claimName ?? "?"}`}
               {sandbox.ownerKind === "warm-pool" && `SandboxWarmPool ${sandbox.warmPoolName ?? "?"}`}
             </p>
             {claim && (
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                Claim state: <Badge tone={claim.effectiveReady ? "success" : "warning"}>{claim.state}</Badge>
-                {claim.readinessMismatch && <span className="ml-2 text-xs text-amber-700">readiness mismatch</span>}
+              <p className="mt-1 text-sm text-muted-foreground">
+                Claim state:{" "}
+                <Badge tone={claim.effectiveReady ? "success" : "warning"}>{claim.state}</Badge>
+                {claim.readinessMismatch && (
+                  <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">readiness mismatch</span>
+                )}
               </p>
             )}
           </section>
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Template &amp; storage</h3>
-            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">Template {sandbox.templateRef ?? "n/a"}.</p>
-            <p className="mt-1 text-sm text-slate-700">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Template &amp; storage
+            </h3>
+            <p className="mt-2 text-sm">Template {sandbox.templateRef ?? "n/a"}.</p>
+            <p className="mt-1 text-sm">
               PVCs: {sandbox.pvcNames.length > 0 ? sandbox.pvcNames.join(", ") : "none attached"}
             </p>
           </section>
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">kubectl</h3>
-            <pre className="mt-2 overflow-x-auto rounded bg-slate-900 p-2 font-mono text-xs text-slate-100 dark:bg-slate-950">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">kubectl</h3>
+            <pre className="mt-2 overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
               kubectl describe sandbox {sandbox.name} -n {sandbox.namespace}
             </pre>
           </section>
@@ -506,9 +492,9 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Claim</h3>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Claim</h3>
             <div className="mt-2 flex flex-wrap gap-2">
-              <Badge tone={claim.readinessMismatch ? "warning" : "success"}>
+              <Badge tone={claim.readinessMismatch ? "warning" : "success"} dot>
                 {claim.readinessMismatch ? "mismatch" : "aligned"}
               </Badge>
               <Badge tone="neutral">{claim.state}</Badge>
@@ -516,15 +502,17 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Sandbox</h3>
-            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sandbox</h3>
+            <p className="mt-2 text-sm">
               Sandbox {claim.sandboxName ?? "pending"} · IPs: {claim.podIPs.join(", ") || "none"}
             </p>
           </section>
           {claim.rawReadyCondition && (
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Ready condition</h3>
-              <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Ready condition
+              </h3>
+              <p className="mt-2 text-sm">
                 status={claim.rawReadyCondition.status}
                 {claim.rawReadyCondition.reason && ` · reason=${claim.rawReadyCondition.reason}`}
                 {claim.rawReadyCondition.message && ` · ${claim.rawReadyCondition.message}`}
@@ -549,20 +537,25 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Capacity</h3>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Capacity
+            </h3>
             <div className="mt-2">
-              <Progress value={warmPool.fillRatio} />
+              <Progress value={Math.min(100, warmPool.fillRatio * 100)} />
             </div>
-            <p className="mt-1 text-xs text-slate-600">
-              {warmPool.readyReplicas} ready of {warmPool.desiredReplicas} desired · template {warmPool.templateRef}
+            <p className="mt-1 text-xs text-muted-foreground">
+              {warmPool.readyReplicas} ready of {warmPool.desiredReplicas} desired · template{" "}
+              {warmPool.templateRef}
             </p>
           </section>
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Members</h3>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Members
+            </h3>
             {warmPool.memberSandboxes.length === 0 ? (
-              <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">No member sandboxes.</p>
+              <p className="mt-2 text-xs text-muted-foreground">No member sandboxes.</p>
             ) : (
-              <ul className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
+              <ul className="mt-2 space-y-1 text-sm">
                 {warmPool.memberSandboxes.map((member) => (
                   <li key={member.name} className="flex items-center gap-2">
                     <Badge tone={member.ready ? "success" : "warning"} dot>
@@ -588,17 +581,19 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Posture</h3>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Posture</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone="info">{template.networkPolicyMode}</Badge>
               <Badge tone={template.automountServiceAccountTokenDefaultFalse ? "success" : "warning"}>
-                {template.automountServiceAccountTokenDefaultFalse ? "default false posture" : "automount enabled"}
+                {template.automountServiceAccountTokenDefaultFalse
+                  ? "default false posture"
+                  : "automount enabled"}
               </Badge>
             </div>
           </section>
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Usage</h3>
-            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Usage</h3>
+            <p className="mt-2 text-sm">
               {template.activeSandboxes} sandbox{template.activeSandboxes === 1 ? "" : "es"} ·{" "}
               {template.activeClaims} claim{template.activeClaims === 1 ? "" : "s"} ·{" "}
               {template.activeWarmPools} warm pool{template.activeWarmPools === 1 ? "" : "s"}
@@ -612,26 +607,35 @@ export function InventorySection({
   useEffect(() => {
     const target = filters.target;
     if (!target) return;
-    const desiredTab = tabKeyForKind(target.resourceKind);
-    if (tabs.some((tab) => tab.key === desiredTab)) {
-      setActiveTab(desiredTab);
+    const desired = viewForKind(target.resourceKind);
+    if (desired !== view) {
+      onRequestView(desired);
+      return;
     }
     if (target.resourceKind === "Sandbox") {
-      const match = rawSandboxes.find((sandbox) => sandbox.namespace === target.namespace && sandbox.name === target.resourceName);
+      const match = rawSandboxes.find(
+        (sandbox) => sandbox.namespace === target.namespace && sandbox.name === target.resourceName,
+      );
       if (match) openSandbox(match);
     } else if (target.resourceKind === "SandboxClaim") {
-      const match = rawClaims.find((claim) => claim.namespace === target.namespace && claim.name === target.resourceName);
+      const match = rawClaims.find(
+        (claim) => claim.namespace === target.namespace && claim.name === target.resourceName,
+      );
       if (match) openClaim(match);
     } else if (target.resourceKind === "SandboxWarmPool") {
-      const match = rawWarmPools.find((warmPool) => warmPool.namespace === target.namespace && warmPool.name === target.resourceName);
+      const match = rawWarmPools.find(
+        (warmPool) => warmPool.namespace === target.namespace && warmPool.name === target.resourceName,
+      );
       if (match) openWarmPool(match);
     } else if (target.resourceKind === "SandboxTemplate") {
-      const match = rawTemplates.find((template) => template.namespace === target.namespace && template.name === target.resourceName);
+      const match = rawTemplates.find(
+        (template) => template.namespace === target.namespace && template.name === target.resourceName,
+      );
       if (match) openTemplate(match);
     }
     filters.clearTarget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.target]);
+  }, [filters.target, view]);
 
   const selectedEvents = selected
     ? events.filter(
@@ -643,72 +647,90 @@ export function InventorySection({
     : [];
 
   return (
-    <Card>
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle>Inventory</CardTitle>
-          {activeTab === "sandboxes" && (
-            <label className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-              owner
-              <select
-                className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                value={ownerFilter}
-                onChange={(event) => setOwnerFilter(event.target.value)}
-              >
-                <option value="">all</option>
-                <option value="direct">direct</option>
-                <option value="claim">claim</option>
-                <option value="warm-pool">warm-pool</option>
-              </select>
-            </label>
-          )}
+    <>
+      {view === "sandboxes" && (
+        <div className="mb-2 flex items-center justify-end gap-2 text-[11px] text-muted-foreground">
+          <label className="flex items-center gap-1.5">
+            owner
+            <select
+              className="h-7 rounded-md border border-border bg-background px-2 text-xs"
+              value={ownerFilter}
+              onChange={(event) => setOwnerFilter(event.target.value)}
+            >
+              <option value="">all</option>
+              <option value="direct">direct</option>
+              <option value="claim">claim</option>
+              <option value="warm-pool">warm-pool</option>
+            </select>
+          </label>
         </div>
-        <Tabs active={activeTab} onChange={setActiveTab} tabs={tabs} />
+      )}
 
-        {activeTab === "sandboxes" && (
-          <DataTable
-            columns={sandboxColumns}
-            data={filteredSandboxes}
-            onSelect={openSandbox}
-            rowHighlight={(sandbox) => !sandbox.effectiveReady}
-            emptyMessage={brokenOnly ? "No broken sandboxes match." : "No sandboxes match."}
-          />
-        )}
+      {view === "sandboxes" && (
+        <DataTable
+          columns={sandboxColumns}
+          data={filteredSandboxes}
+          onSelect={openSandbox}
+          rowHighlight={(sandbox) => !sandbox.effectiveReady}
+          emptyMessage={brokenOnly ? "No broken sandboxes match." : "No sandboxes match."}
+        />
+      )}
+      {view === "claims" && (
+        <DataTable
+          columns={claimColumns}
+          data={claims}
+          onSelect={openClaim}
+          rowHighlight={(claim) => !claim.effectiveReady || claim.readinessMismatch}
+          emptyMessage={brokenOnly ? "No broken claims." : "No claims match."}
+        />
+      )}
+      {view === "warm-pools" && (
+        <DataTable
+          columns={warmPoolColumns}
+          data={warmPools}
+          onSelect={openWarmPool}
+          rowHighlight={(warmPool) => warmPool.readyReplicas < warmPool.desiredReplicas}
+          emptyMessage={brokenOnly ? "No underfilled warm pools." : "No warm pools match."}
+        />
+      )}
+      {view === "templates" && (
+        <DataTable
+          columns={templateColumns}
+          data={templates}
+          onSelect={openTemplate}
+          emptyMessage="No templates match."
+        />
+      )}
 
-        {activeTab === "claims" && (
-          <DataTable
-            columns={claimColumns}
-            data={claims}
-            onSelect={openClaim}
-            rowHighlight={(claim) => !claim.effectiveReady || claim.readinessMismatch}
-            emptyMessage={brokenOnly ? "No broken claims." : "No claims match."}
-          />
-        )}
-
-        {activeTab === "warm-pools" && (
-          <DataTable
-            columns={warmPoolColumns}
-            data={warmPools}
-            onSelect={openWarmPool}
-            rowHighlight={(warmPool) => warmPool.readyReplicas < warmPool.desiredReplicas}
-            emptyMessage={brokenOnly ? "No underfilled warm pools." : "No warm pools match."}
-          />
-        )}
-
-        {activeTab === "templates" && (
-          <DataTable
-            columns={templateColumns}
-            data={templates}
-            onSelect={openTemplate}
-            emptyMessage="No templates match."
-          />
-        )}
-      </div>
-
-      <Drawer open={selected !== null} title={selected?.title ?? ""} onClose={() => setSelected(null)}>
-        {selected?.body}
-        <EventList events={selectedEvents} />
-      </Drawer>
-    </Card>
+      <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
+        <SheetContent side="right" className="w-full max-w-xl overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="font-mono text-base">{selected?.title ?? ""}</SheetTitle>
+            {selected && (
+              <p className="text-xs text-muted-foreground">
+                {selected.resourceKind} · {selected.namespace}
+              </p>
+            )}
+          </SheetHeader>
+          <div className="mt-4 space-y-5">
+            {selected?.body}
+            <EventList events={selectedEvents} />
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
   );
+}
+
+function viewForKind(kind: SandboxResourceKind): InventoryView {
+  switch (kind) {
+    case "Sandbox":
+      return "sandboxes";
+    case "SandboxClaim":
+      return "claims";
+    case "SandboxWarmPool":
+      return "warm-pools";
+    case "SandboxTemplate":
+      return "templates";
+  }
 }
