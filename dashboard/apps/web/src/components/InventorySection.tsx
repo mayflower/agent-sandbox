@@ -4,6 +4,7 @@ import type {
   ClaimLiveView,
   EventView,
   SandboxLiveView,
+  SandboxResourceKind,
   TemplateLiveView,
   WarmPoolLiveView,
 } from "@agent-sandbox/dashboard-shared";
@@ -11,7 +12,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../lib/api.js";
-import { useFilters, type SandboxTarget } from "../lib/filters.js";
+import { useFilters } from "../lib/filters.js";
 import { ActionButton } from "./ActionButton.js";
 import { Badge } from "./ui/badge.js";
 import { Card, CardTitle } from "./ui/card.js";
@@ -23,14 +24,14 @@ import { formatAge } from "../lib/utils.js";
 type Selection =
   | {
       title: string;
-      resourceKind: "Sandbox" | "SandboxClaim" | "SandboxWarmPool" | "SandboxTemplate";
+      resourceKind: SandboxResourceKind;
       namespace: string;
       resourceName: string;
       body: ReactNode;
     }
   | null;
 
-function tabKeyForKind(kind: SandboxTarget["resourceKind"]): string {
+function tabKeyForKind(kind: SandboxResourceKind): string {
   switch (kind) {
     case "Sandbox":
       return "sandboxes";
@@ -68,7 +69,7 @@ function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
 
   return (
     <section>
-      <h3 className="font-semibold text-slate-900">Actions</h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actions</h3>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Delete sandbox"
@@ -85,7 +86,9 @@ function SandboxActions({ sandbox }: { sandbox: SandboxLiveView }) {
           onConfirm={() => reconcile.mutateAsync()}
         />
       </div>
-      <p className="mt-2 text-xs text-slate-500">{deleteReason} Reconcile bumps an annotation; always safe.</p>
+      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        {deleteReason} Reconcile bumps an annotation; always safe.
+      </p>
     </section>
   );
 }
@@ -98,7 +101,7 @@ function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templa
   });
   return (
     <section>
-      <h3 className="font-semibold text-slate-900">Actions</h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actions</h3>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Delete claim"
@@ -109,19 +112,13 @@ function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templa
           onConfirm={() => del.mutateAsync()}
         />
       </div>
-      <p className="mt-2 text-xs text-slate-500">
+      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
         {templateMissing
           ? `Template "${claim.templateRef}" is not present; safe to delete.`
           : "Template exists; dashboard only deletes claims whose template is missing."}
       </p>
     </section>
   );
-}
-
-function matchesSearch(name: string, namespace: string, search: string): boolean {
-  if (!search) return true;
-  const needle = search.toLowerCase();
-  return name.toLowerCase().includes(needle) || namespace.toLowerCase().includes(needle);
 }
 
 const PAGE_SIZE = 15;
@@ -148,7 +145,11 @@ function DataTable<T>({
   });
 
   if (data.length === 0) {
-    return <p className="px-3 py-4 text-sm text-slate-600">{emptyMessage ?? "No matching resources."}</p>;
+    return (
+      <p className="px-2 py-3 text-xs text-slate-500 dark:text-slate-400">
+        {emptyMessage ?? "No matching resources."}
+      </p>
+    );
   }
 
   const totalRows = data.length;
@@ -167,7 +168,7 @@ function DataTable<T>({
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
-                    className="border-b border-slate-200 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-slate-500"
+                    className="border-b border-slate-200 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400"
                   >
                     {header.isPlaceholder ? null : String(header.column.columnDef.header)}
                   </th>
@@ -182,13 +183,16 @@ function DataTable<T>({
                 <tr
                   key={row.id}
                   className={
-                    "cursor-pointer border-b border-slate-100 transition hover:bg-slate-50 " +
-                    (highlighted ? "bg-rose-50/70" : "")
+                    "cursor-pointer border-b border-slate-100 text-xs transition hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800 " +
+                    (highlighted ? "bg-rose-50/60 dark:bg-rose-900/20" : "")
                   }
                   onClick={() => onSelect(row.original)}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-2 text-sm text-slate-800">
+                    <td
+                      key={cell.id}
+                      className="px-2 py-1 text-slate-800 dark:text-slate-200"
+                    >
                       {cell.column.columnDef.cell
                         ? flexRender(cell.column.columnDef.cell, cell.getContext())
                         : String(cell.getValue() ?? "")}
@@ -201,7 +205,7 @@ function DataTable<T>({
         </table>
       </div>
       {pageCount > 1 && (
-        <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2 text-xs text-slate-600">
+        <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-1.5 text-[11px] text-slate-500 dark:border-slate-800 dark:text-slate-400">
           <span className="tabular-nums">
             {rangeStart}–{rangeEnd} of {totalRows}
           </span>
@@ -210,20 +214,20 @@ function DataTable<T>({
               type="button"
               onClick={() => table.previousPage()}
               disabled={!table.getCanPreviousPage()}
-              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              ‹ prev
+              ‹
             </button>
-            <span className="px-2 tabular-nums">
-              {pageIndex + 1} / {pageCount}
+            <span className="px-1 tabular-nums">
+              {pageIndex + 1}/{pageCount}
             </span>
             <button
               type="button"
               onClick={() => table.nextPage()}
               disabled={!table.getCanNextPage()}
-              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              next ›
+              ›
             </button>
           </div>
         </div>
@@ -235,21 +239,22 @@ function DataTable<T>({
 function EventList({ events }: { events: EventView[] }) {
   return (
     <section>
-      <h3 className="mb-3 font-semibold text-slate-900">Events</h3>
-      <div className="space-y-3">
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Events</h3>
+      <div className="space-y-1.5">
         {events.length === 0 ? (
-          <p className="text-sm text-slate-600">No events for this object.</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">No events for this object.</p>
         ) : (
           events.map((event) => (
             <article
               key={`${event.resourceKind}-${event.resourceName}-${event.eventTime}-${event.reason}`}
-              className="rounded-2xl border border-slate-200 bg-white/70 p-4"
+              className="rounded border border-slate-200 bg-white px-2 py-1.5 dark:border-slate-800 dark:bg-slate-900"
             >
               <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={event.type === "Warning" ? "warning" : "info"}>{event.type ?? "Info"}</Badge>
-                <span className="font-semibold text-slate-800">{event.reason ?? "Event"}</span>
+                <Badge tone={event.type === "Warning" ? "warning" : "info"} dot>
+                  {event.reason ?? event.type ?? "Event"}
+                </Badge>
               </div>
-              <p className="mt-2 text-sm text-slate-700">{event.message}</p>
+              <p className="mt-1 text-xs text-slate-700 dark:text-slate-300">{event.message}</p>
             </article>
           ))
         )}
@@ -264,6 +269,10 @@ export function InventorySection({
   claims,
   warmPools,
   templates,
+  rawSandboxes,
+  rawClaims,
+  rawWarmPools,
+  rawTemplates,
   events,
 }: {
   capabilities: Capabilities;
@@ -271,6 +280,10 @@ export function InventorySection({
   claims: ClaimLiveView[];
   warmPools: WarmPoolLiveView[];
   templates: TemplateLiveView[];
+  rawSandboxes: SandboxLiveView[];
+  rawClaims: ClaimLiveView[];
+  rawWarmPools: WarmPoolLiveView[];
+  rawTemplates: TemplateLiveView[];
   events: EventView[];
 }) {
   const filters = useFilters();
@@ -284,8 +297,6 @@ export function InventorySection({
   const [ownerFilter, setOwnerFilter] = useState("");
   const [selected, setSelected] = useState<Selection>(null);
 
-  const search = filters.search;
-  const namespace = filters.namespace;
   const brokenOnly = filters.brokenOnly;
 
   const claimOf = useMemo(() => {
@@ -296,69 +307,71 @@ export function InventorySection({
     return map;
   }, [claims]);
 
+  const templatePresence = useMemo(() => {
+    const set = new Set<string>();
+    for (const template of rawTemplates) {
+      set.add(`${template.namespace}/${template.name}`);
+    }
+    return set;
+  }, [rawTemplates]);
+
   const filteredSandboxes = useMemo(
-    () =>
-      sandboxes.filter(
-        (sandbox) =>
-          matchesSearch(sandbox.name, sandbox.namespace, search) &&
-          (!namespace || sandbox.namespace === namespace) &&
-          (!ownerFilter || sandbox.ownerKind === ownerFilter) &&
-          (!brokenOnly || !sandbox.effectiveReady),
-      ),
-    [sandboxes, search, namespace, ownerFilter, brokenOnly],
-  );
-  const filteredClaims = useMemo(
-    () =>
-      claims.filter(
-        (claim) =>
-          matchesSearch(claim.name, claim.namespace, search) &&
-          (!namespace || claim.namespace === namespace) &&
-          (!brokenOnly || !claim.effectiveReady || claim.readinessMismatch),
-      ),
-    [claims, search, namespace, brokenOnly],
-  );
-  const filteredWarmPools = useMemo(
-    () =>
-      warmPools.filter(
-        (warmPool) =>
-          matchesSearch(warmPool.name, warmPool.namespace, search) &&
-          (!namespace || warmPool.namespace === namespace) &&
-          (!brokenOnly || warmPool.readyReplicas < warmPool.desiredReplicas),
-      ),
-    [warmPools, search, namespace, brokenOnly],
-  );
-  const filteredTemplates = useMemo(
-    () =>
-      templates.filter(
-        (template) =>
-          matchesSearch(template.name, template.namespace, search) &&
-          (!namespace || template.namespace === namespace),
-      ),
-    [templates, search, namespace],
+    () => (ownerFilter ? sandboxes.filter((sandbox) => sandbox.ownerKind === ownerFilter) : sandboxes),
+    [sandboxes, ownerFilter],
   );
 
+  const showTemplateColumn = useMemo(() => {
+    if (rawSandboxes.length === 0) return true;
+    const mapped = rawSandboxes.filter((sandbox) => sandbox.templateRef).length;
+    return mapped / rawSandboxes.length >= 0.2;
+  }, [rawSandboxes]);
+
   const sandboxColumns = useMemo<ColumnDef<SandboxLiveView>[]>(
-    () => [
-      { header: "Name", accessorKey: "name" },
-      { header: "Namespace", accessorKey: "namespace" },
-      { header: "Template", accessorFn: (sandbox) => sandbox.templateRef ?? "—" },
-      { header: "Owner", accessorKey: "ownerKind" },
-      {
-        header: "State",
-        accessorKey: "runtimeState",
-        cell: ({ row }) => (
-          <Badge tone={row.original.effectiveReady ? "success" : row.original.runtimeState === "missing" ? "danger" : "warning"}>
-            {row.original.effectiveReady ? "ready" : row.original.runtimeState}
-          </Badge>
-        ),
-      },
-      { header: "Age", accessorFn: (sandbox) => formatAge(sandbox.ageSeconds) },
-    ],
-    [],
+    () => {
+      const columns: ColumnDef<SandboxLiveView>[] = [
+        {
+          header: "Name",
+          accessorKey: "name",
+          cell: ({ row }) => <span className="font-mono">{row.original.name}</span>,
+        },
+        { header: "Namespace", accessorKey: "namespace" },
+      ];
+      if (showTemplateColumn) {
+        columns.push({ header: "Template", accessorFn: (sandbox) => sandbox.templateRef ?? "—" });
+      }
+      columns.push(
+        { header: "Owner", accessorKey: "ownerKind" },
+        {
+          header: "State",
+          accessorKey: "runtimeState",
+          cell: ({ row }) => (
+            <Badge
+              tone={
+                row.original.effectiveReady
+                  ? "success"
+                  : row.original.runtimeState === "missing"
+                    ? "danger"
+                    : "warning"
+              }
+              dot
+            >
+              {row.original.effectiveReady ? "ready" : row.original.runtimeState}
+            </Badge>
+          ),
+        },
+        { header: "Age", accessorFn: (sandbox) => formatAge(sandbox.ageSeconds) },
+      );
+      return columns;
+    },
+    [showTemplateColumn],
   );
   const claimColumns = useMemo<ColumnDef<ClaimLiveView>[]>(
     () => [
-      { header: "Name", accessorKey: "name" },
+      {
+        header: "Name",
+        accessorKey: "name",
+        cell: ({ row }) => <span className="font-mono">{row.original.name}</span>,
+      },
       { header: "Namespace", accessorKey: "namespace" },
       { header: "Template", accessorKey: "templateRef" },
       { header: "Sandbox", accessorFn: (claim) => claim.sandboxName ?? "—" },
@@ -366,7 +379,9 @@ export function InventorySection({
         header: "State",
         accessorKey: "state",
         cell: ({ row }) => (
-          <Badge tone={row.original.effectiveReady ? "success" : "warning"}>{row.original.state}</Badge>
+          <Badge tone={row.original.effectiveReady ? "success" : "warning"} dot>
+            {row.original.state}
+          </Badge>
         ),
       },
       {
@@ -378,7 +393,11 @@ export function InventorySection({
   );
   const warmPoolColumns = useMemo<ColumnDef<WarmPoolLiveView>[]>(
     () => [
-      { header: "Name", accessorKey: "name" },
+      {
+        header: "Name",
+        accessorKey: "name",
+        cell: ({ row }) => <span className="font-mono">{row.original.name}</span>,
+      },
       { header: "Template", accessorKey: "templateRef" },
       { header: "Ready", accessorKey: "readyReplicas" },
       { header: "Desired", accessorKey: "desiredReplicas" },
@@ -388,6 +407,7 @@ export function InventorySection({
         cell: ({ row }) => (
           <Badge
             tone={row.original.readyReplicas < row.original.desiredReplicas ? "warning" : "success"}
+            dot
           >
             {Math.round(row.original.fillRatio * 100)}%
           </Badge>
@@ -398,7 +418,11 @@ export function InventorySection({
   );
   const templateColumns = useMemo<ColumnDef<TemplateLiveView>[]>(
     () => [
-      { header: "Name", accessorKey: "name" },
+      {
+        header: "Name",
+        accessorKey: "name",
+        cell: ({ row }) => <span className="font-mono">{row.original.name}</span>,
+      },
       { header: "Network", accessorKey: "networkPolicyMode" },
       {
         header: "Automount",
@@ -421,9 +445,9 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-slate-900">Status</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</h3>
             <div className="mt-2 flex flex-wrap gap-2">
-              <Badge tone={sandbox.effectiveReady ? "success" : "warning"}>
+              <Badge tone={sandbox.effectiveReady ? "success" : "warning"} dot>
                 {sandbox.effectiveReady ? "ready" : "not ready"}
               </Badge>
               <Badge tone="info">{sandbox.objectState}</Badge>
@@ -432,8 +456,8 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="font-semibold text-slate-900">Runtime</h3>
-            <p className="mt-2 text-sm text-slate-700">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Runtime</h3>
+            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
               Pod {sandbox.podName ?? "missing"}
               {sandbox.podPhase ? ` (${sandbox.podPhase})` : ""} on {sandbox.nodeName ?? "n/a"}
               {" · "}
@@ -441,29 +465,29 @@ export function InventorySection({
             </p>
           </section>
           <section>
-            <h3 className="font-semibold text-slate-900">Owner</h3>
-            <p className="mt-2 text-sm text-slate-700">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Owner</h3>
+            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
               {sandbox.ownerKind === "direct" && "Standalone (no claim / no warm pool)"}
               {sandbox.ownerKind === "claim" && `SandboxClaim ${sandbox.claimName ?? "?"}`}
               {sandbox.ownerKind === "warm-pool" && `SandboxWarmPool ${sandbox.warmPoolName ?? "?"}`}
             </p>
             {claim && (
-              <p className="mt-1 text-sm text-slate-600">
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
                 Claim state: <Badge tone={claim.effectiveReady ? "success" : "warning"}>{claim.state}</Badge>
                 {claim.readinessMismatch && <span className="ml-2 text-xs text-amber-700">readiness mismatch</span>}
               </p>
             )}
           </section>
           <section>
-            <h3 className="font-semibold text-slate-900">Template &amp; storage</h3>
-            <p className="mt-2 text-sm text-slate-700">Template {sandbox.templateRef ?? "n/a"}.</p>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Template &amp; storage</h3>
+            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">Template {sandbox.templateRef ?? "n/a"}.</p>
             <p className="mt-1 text-sm text-slate-700">
               PVCs: {sandbox.pvcNames.length > 0 ? sandbox.pvcNames.join(", ") : "none attached"}
             </p>
           </section>
           <section>
-            <h3 className="font-semibold text-slate-900">kubectl</h3>
-            <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">kubectl</h3>
+            <pre className="mt-2 overflow-x-auto rounded bg-slate-900 p-2 font-mono text-xs text-slate-100 dark:bg-slate-950">
               kubectl describe sandbox {sandbox.name} -n {sandbox.namespace}
             </pre>
           </section>
@@ -482,7 +506,7 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-slate-900">Claim</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Claim</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone={claim.readinessMismatch ? "warning" : "success"}>
                 {claim.readinessMismatch ? "mismatch" : "aligned"}
@@ -492,15 +516,15 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="font-semibold text-slate-900">Sandbox</h3>
-            <p className="mt-2 text-sm text-slate-700">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Sandbox</h3>
+            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
               Sandbox {claim.sandboxName ?? "pending"} · IPs: {claim.podIPs.join(", ") || "none"}
             </p>
           </section>
           {claim.rawReadyCondition && (
             <section>
-              <h3 className="font-semibold text-slate-900">Ready condition</h3>
-              <p className="mt-2 text-sm text-slate-700">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Ready condition</h3>
+              <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
                 status={claim.rawReadyCondition.status}
                 {claim.rawReadyCondition.reason && ` · reason=${claim.rawReadyCondition.reason}`}
                 {claim.rawReadyCondition.message && ` · ${claim.rawReadyCondition.message}`}
@@ -509,11 +533,7 @@ export function InventorySection({
           )}
           <ClaimActions
             claim={claim}
-            templateMissing={
-              !templates.some(
-                (template) => template.namespace === claim.namespace && template.name === claim.templateRef,
-              )
-            }
+            templateMissing={!templatePresence.has(`${claim.namespace}/${claim.templateRef}`)}
           />
         </div>
       ),
@@ -529,7 +549,7 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-slate-900">Capacity</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Capacity</h3>
             <div className="mt-2">
               <Progress value={warmPool.fillRatio} />
             </div>
@@ -538,15 +558,17 @@ export function InventorySection({
             </p>
           </section>
           <section>
-            <h3 className="font-semibold text-slate-900">Members</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Members</h3>
             {warmPool.memberSandboxes.length === 0 ? (
-              <p className="mt-2 text-sm text-slate-600">No member sandboxes.</p>
+              <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">No member sandboxes.</p>
             ) : (
-              <ul className="mt-2 space-y-1 text-sm text-slate-700">
+              <ul className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
                 {warmPool.memberSandboxes.map((member) => (
                   <li key={member.name} className="flex items-center gap-2">
-                    <Badge tone={member.ready ? "success" : "warning"}>{member.ready ? "ready" : "not ready"}</Badge>
-                    <span className="truncate">{member.name}</span>
+                    <Badge tone={member.ready ? "success" : "warning"} dot>
+                      {member.ready ? "ready" : "not ready"}
+                    </Badge>
+                    <span className="truncate font-mono text-xs">{member.name}</span>
                   </li>
                 ))}
               </ul>
@@ -566,7 +588,7 @@ export function InventorySection({
       body: (
         <div className="space-y-4">
           <section>
-            <h3 className="font-semibold text-slate-900">Posture</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Posture</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone="info">{template.networkPolicyMode}</Badge>
               <Badge tone={template.automountServiceAccountTokenDefaultFalse ? "success" : "warning"}>
@@ -575,8 +597,8 @@ export function InventorySection({
             </div>
           </section>
           <section>
-            <h3 className="font-semibold text-slate-900">Usage</h3>
-            <p className="mt-2 text-sm text-slate-700">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Usage</h3>
+            <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
               {template.activeSandboxes} sandbox{template.activeSandboxes === 1 ? "" : "es"} ·{" "}
               {template.activeClaims} claim{template.activeClaims === 1 ? "" : "s"} ·{" "}
               {template.activeWarmPools} warm pool{template.activeWarmPools === 1 ? "" : "s"}
@@ -595,16 +617,16 @@ export function InventorySection({
       setActiveTab(desiredTab);
     }
     if (target.resourceKind === "Sandbox") {
-      const match = sandboxes.find((sandbox) => sandbox.namespace === target.namespace && sandbox.name === target.resourceName);
+      const match = rawSandboxes.find((sandbox) => sandbox.namespace === target.namespace && sandbox.name === target.resourceName);
       if (match) openSandbox(match);
     } else if (target.resourceKind === "SandboxClaim") {
-      const match = claims.find((claim) => claim.namespace === target.namespace && claim.name === target.resourceName);
+      const match = rawClaims.find((claim) => claim.namespace === target.namespace && claim.name === target.resourceName);
       if (match) openClaim(match);
     } else if (target.resourceKind === "SandboxWarmPool") {
-      const match = warmPools.find((warmPool) => warmPool.namespace === target.namespace && warmPool.name === target.resourceName);
+      const match = rawWarmPools.find((warmPool) => warmPool.namespace === target.namespace && warmPool.name === target.resourceName);
       if (match) openWarmPool(match);
     } else if (target.resourceKind === "SandboxTemplate") {
-      const match = templates.find((template) => template.namespace === target.namespace && template.name === target.resourceName);
+      const match = rawTemplates.find((template) => template.namespace === target.namespace && template.name === target.resourceName);
       if (match) openTemplate(match);
     }
     filters.clearTarget();
@@ -622,23 +644,14 @@ export function InventorySection({
 
   return (
     <Card>
-      <div className="space-y-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <CardTitle>Inventory</CardTitle>
-            <p className="mt-1 text-sm text-slate-600">
-              Search, filter, and drill into sandboxes, claims, warm pools, and templates.
-            </p>
-          </div>
-          <Tabs active={activeTab} onChange={setActiveTab} tabs={tabs} />
-        </div>
-
-        {activeTab === "sandboxes" && (
-          <div className="grid gap-3 md:grid-cols-3">
-            <label className="text-sm">
-              <div className="mb-1 font-semibold text-slate-700">Owner kind</div>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Inventory</CardTitle>
+          {activeTab === "sandboxes" && (
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+              owner
               <select
-                className="w-full rounded-2xl border border-slate-300 px-3 py-2"
+                className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                 value={ownerFilter}
                 onChange={(event) => setOwnerFilter(event.target.value)}
               >
@@ -648,8 +661,9 @@ export function InventorySection({
                 <option value="warm-pool">warm-pool</option>
               </select>
             </label>
-          </div>
-        )}
+          )}
+        </div>
+        <Tabs active={activeTab} onChange={setActiveTab} tabs={tabs} />
 
         {activeTab === "sandboxes" && (
           <DataTable
@@ -664,7 +678,7 @@ export function InventorySection({
         {activeTab === "claims" && (
           <DataTable
             columns={claimColumns}
-            data={filteredClaims}
+            data={claims}
             onSelect={openClaim}
             rowHighlight={(claim) => !claim.effectiveReady || claim.readinessMismatch}
             emptyMessage={brokenOnly ? "No broken claims." : "No claims match."}
@@ -674,7 +688,7 @@ export function InventorySection({
         {activeTab === "warm-pools" && (
           <DataTable
             columns={warmPoolColumns}
-            data={filteredWarmPools}
+            data={warmPools}
             onSelect={openWarmPool}
             rowHighlight={(warmPool) => warmPool.readyReplicas < warmPool.desiredReplicas}
             emptyMessage={brokenOnly ? "No underfilled warm pools." : "No warm pools match."}
@@ -684,7 +698,7 @@ export function InventorySection({
         {activeTab === "templates" && (
           <DataTable
             columns={templateColumns}
-            data={filteredTemplates}
+            data={templates}
             onSelect={openTemplate}
             emptyMessage="No templates match."
           />

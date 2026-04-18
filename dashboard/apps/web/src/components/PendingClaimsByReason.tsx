@@ -1,55 +1,46 @@
 import type { PendingClaimReason } from "@agent-sandbox/dashboard-shared";
-import { useState } from "react";
 
 import { useFilters } from "../lib/filters.js";
-import { Badge } from "./ui/badge.js";
+import { useExpandable } from "../lib/useExpandable.js";
 import { Card, CardTitle } from "./ui/card.js";
 
 export function PendingClaimsByReason({ items }: { items: PendingClaimReason[] }) {
   const filters = useFilters();
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const expandable = useExpandable();
 
   if (items.length === 0) {
     return null;
   }
 
-  const toggle = (key: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  const total = items.reduce((sum, entry) => sum + entry.count, 0);
-
   return (
     <Card>
       <div className="flex items-baseline justify-between gap-3">
-        <CardTitle>Pending claims</CardTitle>
-        <Badge tone={total > 0 ? "warning" : "success"}>{total} pending</Badge>
+        <CardTitle>Pending by reason</CardTitle>
+        <span className="text-[11px] text-slate-500 tabular-nums dark:text-slate-400">{items.length} reason{items.length === 1 ? "" : "s"}</span>
       </div>
-      <ul className="mt-3 max-h-[18rem] space-y-2 overflow-y-auto pr-1">
+      <ul className="mt-1.5 max-h-[18rem] space-y-1 overflow-y-auto pr-1">
         {items.map((entry) => {
           const key = entry.reason;
-          const open = expanded.has(key);
+          const open = expandable.has(key);
           return (
-            <li key={key} className="rounded-2xl border border-slate-200 bg-white/70">
+            <li
+              key={key}
+              className="rounded border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+            >
               <button
                 type="button"
-                onClick={() => toggle(key)}
-                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-emerald-50/60"
+                onClick={() => expandable.toggle(key)}
+                className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left hover:bg-slate-50 dark:hover:bg-slate-800"
                 aria-expanded={open}
               >
-                <span className="text-sm font-semibold text-slate-800">{entry.reason}</span>
-                <div className="flex items-center gap-2 text-xs text-slate-500">
-                  <span>{open ? "hide" : "show"}</span>
-                  <Badge tone="neutral">{entry.count}</Badge>
-                </div>
+                <span className="truncate text-xs text-slate-800 dark:text-slate-200">{entry.reason}</span>
+                <span className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span className="tabular-nums">{entry.count}</span>
+                  <span>{open ? "−" : "+"}</span>
+                </span>
               </button>
               {open && (
-                <ul className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <ul className="border-t border-slate-200 bg-slate-50 py-1 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
                   {entry.claims.map((claim) => (
                     <li key={`${claim.namespace}/${claim.name}`}>
                       <button
@@ -61,14 +52,14 @@ export function PendingClaimsByReason({ items }: { items: PendingClaimReason[] }
                             resourceName: claim.name,
                           })
                         }
-                        className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-1 text-left hover:bg-white"
+                        className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-left hover:bg-white dark:hover:bg-slate-900"
                       >
-                        <span className="truncate">
-                          <span className="text-slate-500">{claim.namespace}</span>
-                          <span className="mx-1 text-slate-400">/</span>
+                        <span className="truncate font-mono">
+                          <span className="text-slate-500 dark:text-slate-500">{claim.namespace}</span>
+                          <span className="mx-0.5 text-slate-400">/</span>
                           <span>{claim.name}</span>
                         </span>
-                        <span className="text-xs text-slate-400">open</span>
+                        <span className="text-[10px] text-slate-400">open</span>
                       </button>
                     </li>
                   ))}

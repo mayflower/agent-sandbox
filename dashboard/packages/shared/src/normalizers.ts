@@ -20,7 +20,6 @@ import type {
   SandboxLiveView,
   TemplateLiveView,
   WarmPoolLiveView,
-  ClaimLiveView as ClaimView,
 } from "./types.js";
 
 const GROUP_SUMMARIES: Record<ProblemKind, string> = {
@@ -197,8 +196,12 @@ export function normalizeSandboxes(snapshot: InventorySnapshot, now = new Date()
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function normalizeClaims(snapshot: InventorySnapshot, now = new Date()): ClaimLiveView[] {
-  const sandboxes = normalizeSandboxes(snapshot, now);
+export function normalizeClaims(
+  snapshot: InventorySnapshot,
+  now = new Date(),
+  precomputed?: { sandboxes: SandboxLiveView[] },
+): ClaimLiveView[] {
+  const sandboxes = precomputed?.sandboxes ?? normalizeSandboxes(snapshot, now);
 
   return snapshot.claims
     .map((claim) => {
@@ -210,7 +213,7 @@ export function normalizeClaims(snapshot: InventorySnapshot, now = new Date()): 
       const shutdownTime = claim.spec.lifecycle?.shutdownTime;
       const shutdownPolicy = claim.spec.lifecycle?.shutdownPolicy;
       const expired = isExpired(shutdownTime, now);
-      const state: ClaimView["state"] =
+      const state: ClaimLiveView["state"] =
         claim.metadata.deletionTimestamp
           ? "deleting"
           : expired
@@ -253,8 +256,12 @@ export function normalizeClaims(snapshot: InventorySnapshot, now = new Date()): 
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function normalizeWarmPools(snapshot: InventorySnapshot, now = new Date()): WarmPoolLiveView[] {
-  const sandboxes = normalizeSandboxes(snapshot, now);
+export function normalizeWarmPools(
+  snapshot: InventorySnapshot,
+  now = new Date(),
+  precomputed?: { sandboxes: SandboxLiveView[] },
+): WarmPoolLiveView[] {
+  const sandboxes = precomputed?.sandboxes ?? normalizeSandboxes(snapshot, now);
 
   return snapshot.warmPools
     .map((warmPool) => {
@@ -288,14 +295,41 @@ export function normalizeWarmPools(snapshot: InventorySnapshot, now = new Date()
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function normalizeTemplates(snapshot: InventorySnapshot, now = new Date()): TemplateLiveView[] {
-  const sandboxes = normalizeSandboxes(snapshot, now);
-  const claims = normalizeClaims(snapshot, now);
-  const warmPools = normalizeWarmPools(snapshot, now);
+export function normalizeTemplates(
+  snapshot: InventorySnapshot,
+  now = new Date(),
+  precomputed?: {
+    sandboxes: SandboxLiveView[];
+    claims: ClaimLiveView[];
+    warmPools: WarmPoolLiveView[];
+  },
+): TemplateLiveView[] {
+  const sandboxes = precomputed?.sandboxes ?? normalizeSandboxes(snapshot, now);
+  const claims = precomputed?.claims ?? normalizeClaims(snapshot, now, { sandboxes });
+  const warmPools = precomputed?.warmPools ?? normalizeWarmPools(snapshot, now, { sandboxes });
+
+  const activeClaimsByTemplate = new Map<string, number>();
+  for (const claim of claims) {
+    if (claim.state === "expired") continue;
+    const key = `${claim.namespace}/${claim.templateRef}`;
+    activeClaimsByTemplate.set(key, (activeClaimsByTemplate.get(key) ?? 0) + 1);
+  }
+  const activeSandboxesByTemplate = new Map<string, number>();
+  for (const sandbox of sandboxes) {
+    if (!sandbox.templateRef || sandbox.objectState === "expired") continue;
+    const key = `${sandbox.namespace}/${sandbox.templateRef}`;
+    activeSandboxesByTemplate.set(key, (activeSandboxesByTemplate.get(key) ?? 0) + 1);
+  }
+  const warmPoolsByTemplate = new Map<string, number>();
+  for (const pool of warmPools) {
+    const key = `${pool.namespace}/${pool.templateRef}`;
+    warmPoolsByTemplate.set(key, (warmPoolsByTemplate.get(key) ?? 0) + 1);
+  }
 
   return snapshot.templates
     .map((template) => {
       const namespace = getNamespace(template.metadata);
+      const key = `${namespace}/${template.metadata.name}`;
       const images = template.spec.podTemplate.spec.containers.map((container) => container.image);
       const ports = template.spec.podTemplate.spec.containers.flatMap((container) =>
         container.ports?.map((port) => port.containerPort) ?? [],
@@ -317,25 +351,36 @@ export function normalizeTemplates(snapshot: InventorySnapshot, now = new Date()
         networkPolicyMode,
         automountServiceAccountTokenDefaultFalse:
           template.spec.podTemplate.spec.automountServiceAccountToken !== true,
-        activeClaims: claims.filter(
-          (claim) => claim.namespace === namespace && claim.templateRef === template.metadata.name && claim.state !== "expired",
-        ).length,
-        activeSandboxes: sandboxes.filter(
-          (sandbox) => sandbox.namespace === namespace && sandbox.templateRef === template.metadata.name && sandbox.objectState !== "expired",
-        ).length,
-        activeWarmPools: warmPools.filter(
-          (warmPool) => warmPool.namespace === namespace && warmPool.templateRef === template.metadata.name,
-        ).length,
+        activeClaims: activeClaimsByTemplate.get(key) ?? 0,
+        activeSandboxes: activeSandboxesByTemplate.get(key) ?? 0,
+        activeWarmPools: warmPoolsByTemplate.get(key) ?? 0,
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function classifyProblems(snapshot: InventorySnapshot, now = new Date()): ProblemView[] {
+export interface NormalizedInventory {
+  sandboxes: SandboxLiveView[];
+  claims: ClaimLiveView[];
+  warmPools: WarmPoolLiveView[];
+  templates: TemplateLiveView[];
+}
+
+export function normalizeAll(snapshot: InventorySnapshot, now = new Date()): NormalizedInventory {
   const sandboxes = normalizeSandboxes(snapshot, now);
-  const claims = normalizeClaims(snapshot, now);
-  const warmPools = normalizeWarmPools(snapshot, now);
-  const templates = new Set(normalizeTemplates(snapshot, now).map((template) => `${template.namespace}/${template.name}`));
+  const claims = normalizeClaims(snapshot, now, { sandboxes });
+  const warmPools = normalizeWarmPools(snapshot, now, { sandboxes });
+  const templates = normalizeTemplates(snapshot, now, { sandboxes, claims, warmPools });
+  return { sandboxes, claims, warmPools, templates };
+}
+
+export function classifyProblems(
+  snapshot: InventorySnapshot,
+  now = new Date(),
+  precomputed?: NormalizedInventory,
+): ProblemView[] {
+  const { sandboxes, claims, warmPools, templates: templateViews } = precomputed ?? normalizeAll(snapshot, now);
+  const templates = new Set(templateViews.map((template) => `${template.namespace}/${template.name}`));
   const problems: ProblemView[] = [];
 
   for (const sandbox of sandboxes) {

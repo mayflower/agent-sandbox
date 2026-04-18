@@ -34,15 +34,11 @@ function renderApp() {
 }
 
 function mockDashboardResponses(options?: { coreOnly?: boolean; failOverview?: boolean; failClaims?: boolean }) {
-  const snapshot = createFixtureSnapshot({
-    capabilities: options?.coreOnly
-      ? {
-          claims: false,
-          warmPools: false,
-          templates: false,
-        }
-      : undefined,
-  });
+  const snapshot = createFixtureSnapshot(
+    options?.coreOnly
+      ? { capabilities: { claims: false, warmPools: false, templates: false } }
+      : {},
+  );
   const routes = new Map<string, unknown>([
     ["/api/capabilities", snapshot.capabilities],
     ["/api/overview", buildOverviewSnapshot(snapshot, NOW)],
@@ -86,7 +82,7 @@ describe("dashboard web app", () => {
     renderApp();
 
     expect(screen.getByText("Loading dashboard snapshot…")).toBeInTheDocument();
-    expect(await screen.findByText("Agent Sandbox")).toBeInTheDocument();
+    expect(await screen.findByText("agent-sandbox")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Sandboxes" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Claims" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Inventory")).toBeInTheDocument();
