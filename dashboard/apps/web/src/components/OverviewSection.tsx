@@ -141,9 +141,10 @@ export function OverviewSection({ overview }: { overview: LiveOverview }) {
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
           <p>
-            <strong className="font-semibold">{totals.unmappedSandboxes}</strong> of {totals.totalSandboxes} sandboxes missing{" "}
-            <code className="rounded bg-amber-500/20 px-1 font-mono">agents.x-k8s.io/sandbox-template-ref</code>
-            {" "}— upgrade the controller and re-annotate affected workloads.
+            <strong className="font-semibold">{totals.unmappedSandboxes}</strong> of {totals.totalSandboxes} sandboxes have no
+            resolvable template — no controller owner (<code className="rounded bg-amber-500/20 px-1 font-mono">SandboxClaim</code>{" "}
+            or <code className="rounded bg-amber-500/20 px-1 font-mono">SandboxWarmPool</code>) and no{" "}
+            <code className="rounded bg-amber-500/20 px-1 font-mono">agents.x-k8s.io/sandbox-template-ref</code> annotation.
           </p>
         </div>
       )}
