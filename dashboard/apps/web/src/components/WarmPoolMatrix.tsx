@@ -24,82 +24,56 @@ export function WarmPoolMatrix({ warmPools }: { warmPools: WarmPoolLiveView[] })
           {underfilled > 0 ? ` · ${underfilled} short` : ""}
         </span>
       </div>
-      <div className="mt-1.5 max-h-[28rem] overflow-auto">
-        <table className="min-w-full text-xs">
-          <thead className="sticky top-0 z-10 bg-white dark:bg-slate-900">
-            <tr className="text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              <th className="px-1.5 py-1">Pool</th>
-              <th className="px-1.5 py-1">Template</th>
-              <th className="px-1.5 py-1 text-right">Rdy</th>
-              <th className="px-1.5 py-1 text-right">Des</th>
-              <th className="px-1.5 py-1 text-right">Crt</th>
-              <th className="px-1.5 py-1 text-right">Fail</th>
-              <th className="px-1.5 py-1 text-right">Fill</th>
-            </tr>
-          </thead>
-          <tbody>
-            {warmPools.map((pool) => {
-              const under = pool.readyReplicas < pool.desiredReplicas;
-              const failing = pool.failedReplicas > 0;
-              return (
-                <tr
-                  key={`${pool.namespace}/${pool.name}`}
-                  onClick={() =>
-                    filters.focus({
-                      namespace: pool.namespace,
-                      resourceKind: "SandboxWarmPool",
-                      resourceName: pool.name,
-                    })
-                  }
-                  className={cn(
-                    "cursor-pointer border-t border-slate-100 tabular-nums hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800",
-                    failing && "bg-rose-50/60 dark:bg-rose-900/20",
-                    !failing && under && "bg-amber-50/50 dark:bg-amber-900/20",
-                  )}
-                >
-                  <td
-                    className="max-w-[10rem] truncate px-1.5 py-0.5 font-mono text-slate-900 dark:text-slate-100"
-                    title={pool.name}
-                  >
-                    {pool.name}
-                  </td>
-                  <td
-                    className="max-w-[10rem] truncate px-1.5 py-0.5 text-slate-600 dark:text-slate-400"
-                    title={pool.templateRef}
-                  >
-                    {pool.templateRef}
-                  </td>
-                  <td className="px-1.5 py-0.5 text-right text-slate-800 dark:text-slate-200">
-                    {pool.readyReplicas}
-                  </td>
-                  <td className="px-1.5 py-0.5 text-right text-slate-800 dark:text-slate-200">
-                    {pool.desiredReplicas}
-                  </td>
-                  <td className="px-1.5 py-0.5 text-right text-slate-800 dark:text-slate-200">
-                    {pool.creatingReplicas}
-                  </td>
-                  <td
-                    className={cn(
-                      "px-1.5 py-0.5 text-right",
-                      failing ? "text-rose-700 dark:text-rose-300" : "text-slate-800 dark:text-slate-200",
-                    )}
-                  >
-                    {pool.failedReplicas}
-                  </td>
-                  <td
-                    className={cn(
-                      "px-1.5 py-0.5 text-right",
-                      under ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300",
-                    )}
-                  >
-                    {Math.round(pool.fillRatio * 100)}%
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <ul className="mt-1.5 max-h-[28rem] space-y-0.5 overflow-y-auto pr-1">
+        {warmPools.map((pool) => {
+          const under = pool.readyReplicas < pool.desiredReplicas;
+          const failing = pool.failedReplicas > 0;
+          const pct = Math.round(pool.fillRatio * 100);
+          const tone = failing
+            ? "text-rose-700 dark:text-rose-300"
+            : under
+              ? "text-amber-700 dark:text-amber-300"
+              : "text-emerald-700 dark:text-emerald-300";
+          const barColor = failing
+            ? "bg-rose-500"
+            : under
+              ? "bg-amber-500"
+              : "bg-emerald-500";
+          return (
+            <li key={`${pool.namespace}/${pool.name}`}>
+              <button
+                type="button"
+                onClick={() =>
+                  filters.focus({
+                    namespace: pool.namespace,
+                    resourceKind: "SandboxWarmPool",
+                    resourceName: pool.name,
+                  })
+                }
+                className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-slate-50 dark:hover:bg-slate-800"
+                title={`${pool.name} · ready ${pool.readyReplicas}/${pool.desiredReplicas} · creating ${pool.creatingReplicas} · failed ${pool.failedReplicas}`}
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-900 dark:text-slate-100">
+                  {pool.name}
+                </span>
+                <span className="w-12 shrink-0 overflow-hidden rounded bg-slate-100 dark:bg-slate-800">
+                  <span
+                    className={cn("block h-1", barColor)}
+                    style={{ width: `${Math.min(100, pct)}%` }}
+                    aria-hidden
+                  />
+                </span>
+                <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-slate-600 dark:text-slate-400">
+                  {pool.readyReplicas}/{pool.desiredReplicas}
+                </span>
+                <span className={cn("w-8 shrink-0 text-right text-[11px] tabular-nums", tone)}>
+                  {pct}%
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </Card>
   );
 }
