@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { buildOverviewSnapshot, classifyProblems, createFixtureSnapshot, groupProblems, mapEvents, normalizeClaims, normalizeSandboxes, normalizeTemplates, normalizeWarmPools } from "../index.js";
+import {
+  buildOverviewSnapshot,
+  classifyProblems,
+  createFixtureSnapshot,
+  getTemplateRefName,
+  groupProblems,
+  mapEvents,
+  normalizeClaims,
+  normalizeSandboxes,
+  normalizeTemplates,
+  normalizeWarmPools,
+  viewForKind,
+} from "../index.js";
+import type { RawSandbox, RawSandboxClaim, RawSandboxWarmPool } from "../index.js";
 
 describe("shared dashboard domain helpers", () => {
   const now = new Date("2026-04-15T12:00:00Z");
@@ -154,5 +167,85 @@ describe("shared dashboard domain helpers", () => {
     expect(events[0]?.resourceKind).toBe("PersistentVolumeClaim");
     expect(ambiguous?.ownerKind).toBe("warm-pool");
     expect(ambiguous?.warmPoolName).toBe("fast-pool");
+  });
+
+  it("resolves templateRef via SandboxClaim owner when no annotation is present", () => {
+    const sandbox: RawSandbox = {
+      metadata: {
+        name: "owner-resolved-sbx",
+        namespace: "demo",
+        creationTimestamp: "2026-04-15T11:00:00Z",
+        ownerReferences: [
+          { kind: "SandboxClaim", name: "my-claim", controller: true },
+        ],
+      },
+      spec: { podTemplate: { spec: { containers: [{ name: "main", image: "busybox" }] } } },
+      status: {},
+    };
+    const claim: RawSandboxClaim = {
+      metadata: { name: "my-claim", namespace: "demo", creationTimestamp: "2026-04-15T10:00:00Z" },
+      spec: { sandboxTemplateRef: { name: "python-secure-v2" } },
+      status: {},
+    };
+    expect(getTemplateRefName(sandbox, { claims: [claim], warmPools: [] })).toBe("python-secure-v2");
+  });
+
+  it("resolves templateRef via SandboxWarmPool owner when no annotation is present", () => {
+    const sandbox: RawSandbox = {
+      metadata: {
+        name: "pool-sbx",
+        namespace: "demo",
+        creationTimestamp: "2026-04-15T11:00:00Z",
+        ownerReferences: [
+          { kind: "SandboxWarmPool", name: "fast-pool", controller: true },
+        ],
+      },
+      spec: { podTemplate: { spec: { containers: [{ name: "main", image: "busybox" }] } } },
+      status: {},
+    };
+    const warmPool: RawSandboxWarmPool = {
+      metadata: { name: "fast-pool", namespace: "demo", creationTimestamp: "2026-04-15T10:00:00Z" },
+      spec: { replicas: 1, sandboxTemplateRef: { name: "vite-template" } },
+      status: {},
+    };
+    expect(getTemplateRefName(sandbox, { claims: [], warmPools: [warmPool] })).toBe("vite-template");
+  });
+
+  it("returns undefined (no annotation fallback) when the owner path is chosen but the owner is missing", () => {
+    const sandbox: RawSandbox = {
+      metadata: {
+        name: "orphan-sbx",
+        namespace: "demo",
+        creationTimestamp: "2026-04-15T11:00:00Z",
+        annotations: { "agents.x-k8s.io/sandbox-template-ref": "stale-annotation" },
+        ownerReferences: [
+          { kind: "SandboxClaim", name: "deleted-claim", controller: true },
+        ],
+      },
+      spec: { podTemplate: { spec: { containers: [{ name: "main", image: "busybox" }] } } },
+      status: {},
+    };
+    expect(getTemplateRefName(sandbox, { claims: [], warmPools: [] })).toBeUndefined();
+  });
+
+  it("falls back to annotation only when no controller owner exists", () => {
+    const sandbox: RawSandbox = {
+      metadata: {
+        name: "direct-sbx",
+        namespace: "demo",
+        creationTimestamp: "2026-04-15T11:00:00Z",
+        annotations: { "agents.x-k8s.io/sandbox-template-ref": "ad-hoc" },
+      },
+      spec: { podTemplate: { spec: { containers: [{ name: "main", image: "busybox" }] } } },
+      status: {},
+    };
+    expect(getTemplateRefName(sandbox, { claims: [], warmPools: [] })).toBe("ad-hoc");
+  });
+
+  it("maps SandboxResourceKind to its inventory view key", () => {
+    expect(viewForKind("Sandbox")).toBe("sandboxes");
+    expect(viewForKind("SandboxClaim")).toBe("claims");
+    expect(viewForKind("SandboxWarmPool")).toBe("warm-pools");
+    expect(viewForKind("SandboxTemplate")).toBe("templates");
   });
 });

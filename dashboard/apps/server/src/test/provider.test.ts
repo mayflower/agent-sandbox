@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import * as k8s from "@kubernetes/client-node";
+import { describe, expect, it, vi } from "vitest";
 
-import { KubernetesInventoryProvider, resolveKubeConfigMode, type ClusterReader } from "../providers/kubernetes-provider.js";
+import {
+  KubernetesClusterReader,
+  KubernetesInventoryProvider,
+  resolveKubeConfigMode,
+  type ClusterReader,
+} from "../providers/kubernetes-provider.js";
 
 describe("kubernetes inventory provider", () => {
   it("prefers kubeconfig unless in-cluster signals are present", () => {
@@ -146,5 +152,63 @@ describe("kubernetes inventory provider", () => {
 
     const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 0 });
     await expect(provider.getSnapshot()).rejects.toThrow("forbidden");
+  });
+
+  it("patchSandboxAnnotations sends the body as an application/merge-patch+json payload", async () => {
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: "test", server: "http://127.0.0.1", skipTLSVerify: true }],
+      users: [{ name: "test" }],
+      contexts: [{ name: "test", cluster: "test", user: "test" }],
+      currentContext: "test",
+    });
+    const reader = new KubernetesClusterReader(kubeConfig);
+    const patchSpy = vi.fn().mockResolvedValue(undefined);
+    (reader as unknown as { customObjectsApi: unknown }).customObjectsApi = {
+      patchNamespacedCustomObject: patchSpy,
+    };
+
+    await reader.patchSandboxAnnotations("demo", "my-sandbox", { foo: "bar" });
+
+    expect(patchSpy).toHaveBeenCalledTimes(1);
+    const [body, options] = patchSpy.mock.calls[0]!;
+    expect(body).toMatchObject({
+      group: "agents.x-k8s.io",
+      version: "v1alpha1",
+      namespace: "demo",
+      name: "my-sandbox",
+      plural: "sandboxes",
+      body: { metadata: { annotations: { foo: "bar" } } },
+    });
+    // setHeaderOptions returns a ConfigurationOptions object whose middleware
+    // tacks on the Content-Type header; assert by invoking it against a fake context.
+    expect(options).toBeTruthy();
+    expect(options.middleware ?? options.promiseMiddleware).toBeDefined();
+    const middleware = (options.middleware ?? options.promiseMiddleware)[0];
+    const headers: Record<string, string> = {};
+    const ctx = { setHeaderParam: (key: string, value: string) => { headers[key] = value; } };
+    const maybePromise = middleware.pre(ctx);
+    if (maybePromise && typeof (maybePromise as { then?: unknown }).then === "function") {
+      await maybePromise;
+    }
+    expect(headers["Content-Type"]).toBe(k8s.PatchStrategy.MergePatch);
+  });
+
+  it("wraps K8s patch failures with namespace/name context", async () => {
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: "test", server: "http://127.0.0.1", skipTLSVerify: true }],
+      users: [{ name: "test" }],
+      contexts: [{ name: "test", cluster: "test", user: "test" }],
+      currentContext: "test",
+    });
+    const reader = new KubernetesClusterReader(kubeConfig);
+    (reader as unknown as { customObjectsApi: unknown }).customObjectsApi = {
+      patchNamespacedCustomObject: vi.fn().mockRejectedValue(new Error("conflict")),
+    };
+
+    await expect(reader.patchSandboxAnnotations("demo", "broken", {})).rejects.toThrow(
+      /patchSandboxAnnotations demo\/broken failed: conflict/,
+    );
   });
 });

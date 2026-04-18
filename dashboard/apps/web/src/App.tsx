@@ -1,4 +1,4 @@
-import { computeLiveOverview, type SandboxResourceKind } from "@agent-sandbox/dashboard-shared";
+import { computeLiveOverview, viewForKind, type InventoryView } from "@agent-sandbox/dashboard-shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Boxes,
@@ -16,7 +16,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import { EventsFeed } from "@/components/EventsFeed";
-import { InventorySection, type InventoryView } from "@/components/InventorySection";
+import { InventorySection } from "@/components/InventorySection";
 import { OverviewSection } from "@/components/OverviewSection";
 import { PendingClaimsByReason } from "@/components/PendingClaimsByReason";
 import { ProblemsPanel } from "@/components/ProblemsPanel";
@@ -101,11 +101,17 @@ function AppContent() {
     enabled: capabilitiesQuery.data?.controllerHealth === true,
     refetchInterval: interval,
   });
-  const hasOptionalQueryError =
-    (capabilitiesQuery.data?.claims === true && claimsQuery.isError) ||
-    (capabilitiesQuery.data?.warmPools === true && warmPoolsQuery.isError) ||
-    (capabilitiesQuery.data?.templates === true && templatesQuery.isError) ||
-    (capabilitiesQuery.data?.events === true && eventsQuery.isError);
+  const queryErrors = [
+    capabilitiesQuery.isError && { name: "capabilities", error: capabilitiesQuery.error },
+    sandboxesQuery.isError && { name: "sandboxes", error: sandboxesQuery.error },
+    problemsQuery.isError && { name: "problems", error: problemsQuery.error },
+    capabilitiesQuery.data?.claims === true && claimsQuery.isError && { name: "claims", error: claimsQuery.error },
+    capabilitiesQuery.data?.warmPools === true && warmPoolsQuery.isError && { name: "warm-pools", error: warmPoolsQuery.error },
+    capabilitiesQuery.data?.templates === true && templatesQuery.isError && { name: "templates", error: templatesQuery.error },
+    capabilitiesQuery.data?.events === true && eventsQuery.isError && { name: "events", error: eventsQuery.error },
+  ].filter(
+    (entry): entry is { name: string; error: unknown } => entry !== false,
+  );
 
   const namespaces = useMemo(() => {
     const set = new Set<string>();
@@ -171,9 +177,14 @@ function AppContent() {
     controllerDown || errorCount > 0 ? "error" : warningCount > 0 ? "warning" : "ok";
 
   const updatedAt = Math.max(
+    capabilitiesQuery.dataUpdatedAt ?? 0,
     sandboxesQuery.dataUpdatedAt ?? 0,
     claimsQuery.dataUpdatedAt ?? 0,
+    warmPoolsQuery.dataUpdatedAt ?? 0,
+    templatesQuery.dataUpdatedAt ?? 0,
     problemsQuery.dataUpdatedAt ?? 0,
+    eventsQuery.dataUpdatedAt ?? 0,
+    controllerHealthQuery.dataUpdatedAt ?? 0,
   );
   const isFetching =
     sandboxesQuery.isFetching ||
@@ -190,10 +201,19 @@ function AppContent() {
     );
   }
 
-  if (capabilitiesQuery.isError || sandboxesQuery.isError || problemsQuery.isError || hasOptionalQueryError) {
+  if (queryErrors.length > 0) {
     return (
-      <main className="flex min-h-screen items-center justify-center text-sm text-destructive">
-        Dashboard snapshot failed to load.
+      <main className="flex min-h-screen items-center justify-center p-6 text-sm text-destructive">
+        <div className="space-y-2">
+          <p className="font-semibold">Dashboard snapshot failed to load.</p>
+          <ul className="list-disc pl-5 text-xs font-mono">
+            {queryErrors.map(({ name, error }) => (
+              <li key={name}>
+                <span className="font-semibold">{name}</span>: {error instanceof Error ? error.message : String(error)}
+              </li>
+            ))}
+          </ul>
+        </div>
       </main>
     );
   }
@@ -250,7 +270,6 @@ function AppContent() {
               rawWarmPools={warmPoolsQuery.data ?? []}
               rawTemplates={templatesQuery.data ?? []}
               events={eventsQuery.data ?? []}
-              onRequestView={setView}
             />
           )}
           {view === "events" && <EventsFeed events={eventsQuery.data ?? []} />}
@@ -408,10 +427,9 @@ function TopBar({
       <Badge
         tone={errorCount > 0 ? "danger" : warningCount > 0 ? "warning" : "success"}
         className="ml-1"
+        title={`${errorCount} error${errorCount === 1 ? "" : "s"} · ${warningCount} warning${warningCount === 1 ? "" : "s"}`}
       >
-        <span className="text-rose-600 dark:text-rose-400">{errorCount}</span>
-        <span className="text-muted-foreground">·</span>
-        <span className="text-amber-600 dark:text-amber-400">{warningCount}</span>
+        {errorCount} · {warningCount}
       </Badge>
       {controllerHealth && (
         <Badge tone={controllerHealth.available ? "success" : "danger"} title={controllerHealth.reason}>
@@ -506,19 +524,6 @@ function TopBar({
       </div>
     </header>
   );
-}
-
-function viewForKind(kind: SandboxResourceKind): InventoryView {
-  switch (kind) {
-    case "Sandbox":
-      return "sandboxes";
-    case "SandboxClaim":
-      return "claims";
-    case "SandboxWarmPool":
-      return "warm-pools";
-    case "SandboxTemplate":
-      return "templates";
-  }
 }
 
 function formatRelative(updatedAt: number, nowMs: number): string {

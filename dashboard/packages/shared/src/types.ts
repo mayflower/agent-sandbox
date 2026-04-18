@@ -212,6 +212,21 @@ export interface InventoryProvider {
 
 export type SandboxResourceKind = "Sandbox" | "SandboxClaim" | "SandboxWarmPool" | "SandboxTemplate";
 
+export type InventoryView = "sandboxes" | "claims" | "warm-pools" | "templates";
+
+export function viewForKind(kind: SandboxResourceKind): InventoryView {
+  switch (kind) {
+    case "Sandbox":
+      return "sandboxes";
+    case "SandboxClaim":
+      return "claims";
+    case "SandboxWarmPool":
+      return "warm-pools";
+    case "SandboxTemplate":
+      return "templates";
+  }
+}
+
 export interface ActionResult {
   kind: "Sandbox" | "SandboxClaim";
   namespace: string;

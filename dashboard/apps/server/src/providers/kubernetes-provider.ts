@@ -207,17 +207,22 @@ export class KubernetesClusterReader implements ClusterReader {
   }
 
   async patchSandboxAnnotations(namespace: string, name: string, annotations: Record<string, string>): Promise<void> {
-    await this.customObjectsApi.patchNamespacedCustomObject(
-      {
-        group: "agents.x-k8s.io",
-        version: "v1alpha1",
-        namespace,
-        plural: "sandboxes",
-        name,
-        body: { metadata: { annotations } },
-      },
-      k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch),
-    );
+    try {
+      await this.customObjectsApi.patchNamespacedCustomObject(
+        {
+          group: "agents.x-k8s.io",
+          version: "v1alpha1",
+          namespace,
+          plural: "sandboxes",
+          name,
+          body: { metadata: { annotations } },
+        },
+        k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`patchSandboxAnnotations ${namespace}/${name} failed: ${message}`, { cause: error });
+    }
   }
 }
 
