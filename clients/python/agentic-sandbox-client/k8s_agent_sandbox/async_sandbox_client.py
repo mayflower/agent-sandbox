@@ -232,6 +232,7 @@ class AsyncSandboxClient(Generic[T]):
         namespace: str = "default",
         resolve_timeout: int = 30,
         warmpool_name: str | None = None,
+        template_name: str | None = None,
     ) -> T:
         """Retrieves an existing sandbox handle given a sandbox claim name.
 
@@ -244,6 +245,11 @@ class AsyncSandboxClient(Generic[T]):
                 the existing claim's ``spec.warmPoolRef.name``.
                 When supplied and the claim references a different
                 warmpool, ``ValueError`` is raised before returning a
+                handle.
+            template_name: Optional SandboxTemplate name to validate against
+                the existing claim's ``spec.sandboxTemplateRef.name``.
+                When supplied and the claim references a different
+                template, ``ValueError`` is raised before returning a
                 handle. Mirrors the sync ``SandboxClient.get_sandbox``
                 guard so async session-reattach callers get the same
                 refuse-on-mismatch semantics.
@@ -259,7 +265,7 @@ class AsyncSandboxClient(Generic[T]):
             existing = self._active_connection_sandboxes.get(key)
 
         try:
-            if warmpool_name is not None:
+            if warmpool_name is not None or template_name is not None:
                 claim_object = await self.k8s_helper.get_sandbox_claim(
                     claim_name, namespace
                 )
@@ -267,17 +273,30 @@ class AsyncSandboxClient(Generic[T]):
                     raise SandboxNotFoundError(
                         f"SandboxClaim '{claim_name}' not found in namespace '{namespace}'."
                     )
-                existing_warmpool = (
-                    claim_object.get("spec", {})
-                    .get("warmPoolRef", {})
-                    .get("name")
-                )
-                if existing_warmpool != warmpool_name:
-                    raise ValueError(
-                        f"SandboxClaim '{claim_name}' in namespace '{namespace}' references "
-                        f"warmpool '{existing_warmpool}', not '{warmpool_name}'. Refusing "
-                        f"to reattach."
+                if warmpool_name is not None:
+                    existing_warmpool = (
+                        claim_object.get("spec", {})
+                        .get("warmPoolRef", {})
+                        .get("name")
                     )
+                    if existing_warmpool != warmpool_name:
+                        raise ValueError(
+                            f"SandboxClaim '{claim_name}' in namespace '{namespace}' references "
+                            f"warmpool '{existing_warmpool}', not '{warmpool_name}'. Refusing "
+                            f"to reattach."
+                        )
+                if template_name is not None:
+                    existing_template = (
+                        claim_object.get("spec", {})
+                        .get("sandboxTemplateRef", {})
+                        .get("name")
+                    )
+                    if existing_template != template_name:
+                        raise ValueError(
+                            f"SandboxClaim '{claim_name}' in namespace '{namespace}' references "
+                            f"template '{existing_template}', not '{template_name}'. Refusing "
+                            f"to reattach."
+                        )
             sandbox_id = await self.k8s_helper.resolve_sandbox_name(
                 claim_name, namespace, timeout=resolve_timeout
             )
@@ -285,7 +304,7 @@ class AsyncSandboxClient(Generic[T]):
             if not sandbox_object:
                 raise SandboxNotFoundError(f"Underlying Sandbox '{sandbox_id}' not found.")
         except ValueError:
-            # Warmpool mismatch is a signed-off refusal — propagate
+            # Warmpool/template mismatch is a signed-off refusal — propagate
             # untouched so the caller sees the security-relevant reason
             # rather than a generic "not found" wrap.
             raise
