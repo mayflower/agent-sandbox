@@ -53,6 +53,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/mayflower-production' }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: ./dashboard
@@ -63,3 +64,23 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify multi-arch manifest
+        # Only after a real push — on PRs the build stays local and
+        # there's no registry manifest to inspect.
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          # Pick any produced tag; the manifest list is identical across
+          # tags from the same build so one lookup is enough.
+          tag=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "Inspecting $tag"
+          docker buildx imagetools inspect "$tag" | tee /tmp/manifest.txt
+          # Fail hard if either arch is missing — silent single-arch
+          # regressions (e.g. an accidental --platform override, or a
+          # native dep without arm64 wheels) would otherwise ship
+          # amd64-only and only surface when an arm64 node pulls.
+          grep -q "linux/amd64" /tmp/manifest.txt \
+            || { echo "::error::multi-arch regression: linux/amd64 missing from manifest"; exit 1; }
+          grep -q "linux/arm64" /tmp/manifest.txt \
+            || { echo "::error::multi-arch regression: linux/arm64 missing from manifest"; exit 1; }
