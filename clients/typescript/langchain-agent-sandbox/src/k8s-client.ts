@@ -390,6 +390,39 @@ export class K8sClient {
   }
 
   /**
+   * Gets a SandboxClaim resource. Returns null if not found.
+   *
+   * Used by reattach paths (`fromExisting`) to verify the existing
+   * claim's `sandboxTemplateRef.name` matches the caller-supplied
+   * `templateName` before resuming the session. Without that check,
+   * two callers using the same claim-name convention across different
+   * templates (e.g. label-collision across "python-secure" and
+   * "python-unsafe") can silently reattach to the wrong template.
+   */
+  async getSandboxClaim(
+    name: string,
+    namespace: string,
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const resp = await this.#customApi.getNamespacedCustomObject({
+        group: CLAIM_API_GROUP,
+        version: CLAIM_API_VERSION,
+        namespace,
+        plural: CLAIM_PLURAL,
+        name,
+      });
+      return resp as Record<string, unknown>;
+    } catch (err) {
+      if (getApiStatusCode(err) === 404) return null;
+      throw new K8sAgentSandboxError(
+        `Failed to get SandboxClaim '${name}': ${err instanceof Error ? err.message : String(err)}`,
+        "K8S_API_ERROR",
+        err instanceof Error ? err : undefined,
+      );
+    }
+  }
+
+  /**
    * Lists SandboxClaim names in a namespace, optionally filtered by labels.
    *
    * When `labels` is non-empty, only claims matching ALL of the given

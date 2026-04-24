@@ -57,8 +57,12 @@ const mockResolveSandboxName = vi.fn().mockResolvedValue("sandbox-abc123");
 const mockWaitForSandboxReady = vi.fn().mockResolvedValue(undefined);
 const mockDeleteSandboxClaim = vi.fn().mockResolvedValue(undefined);
 const mockGetSandbox = vi.fn().mockResolvedValue({});
+const mockGetSandboxClaim = vi.fn().mockResolvedValue({
+  spec: { sandboxTemplateRef: { name: "python-secure" } },
+});
 const mockListSandboxClaims = vi.fn().mockResolvedValue([]);
 const mockWaitForGatewayIp = vi.fn().mockResolvedValue("1.2.3.4");
+const mockK8sClientClose = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("./k8s-client.js", () => ({
   K8sClient: class {
@@ -67,8 +71,10 @@ vi.mock("./k8s-client.js", () => ({
     waitForSandboxReady = mockWaitForSandboxReady;
     deleteSandboxClaim = mockDeleteSandboxClaim;
     getSandbox = mockGetSandbox;
+    getSandboxClaim = mockGetSandboxClaim;
     listSandboxClaims = mockListSandboxClaims;
     waitForGatewayIp = mockWaitForGatewayIp;
+    close = mockK8sClientClose;
   },
 }));
 
@@ -825,7 +831,110 @@ describe("K8sAgentSandbox", () => {
       expect(sb.claimName).toBe("claim-abc");
       expect(sb.isRunning).toBe(true);
 
+      // Without templateName, the pre-check must be skipped so callers
+      // that don't track the template (and don't want to pay the extra
+      // GET round-trip) keep the pre-fix behavior.
+      expect(mockGetSandboxClaim).not.toHaveBeenCalled();
+
       await sb.close();
+    });
+
+    it("should verify templateName matches before reattaching", async () => {
+      mockGetSandboxClaim.mockResolvedValueOnce({
+        spec: { sandboxTemplateRef: { name: "python-secure" } },
+      });
+
+      const sb = await K8sAgentSandbox.fromExisting("claim-abc", {
+        connectionConfig: { type: "direct", baseUrl: "http://localhost:8080" },
+        namespace: "test-ns",
+        templateName: "python-secure",
+      });
+
+      expect(mockGetSandboxClaim).toHaveBeenCalledWith("claim-abc", "test-ns");
+      expect(sb.claimName).toBe("claim-abc");
+
+      await sb.close();
+    });
+
+    it("should refuse to reattach when templateName does not match", async () => {
+      mockGetSandboxClaim.mockResolvedValueOnce({
+        spec: { sandboxTemplateRef: { name: "python-secure" } },
+      });
+
+      await expect(
+        K8sAgentSandbox.fromExisting("claim-abc", {
+          connectionConfig: {
+            type: "direct",
+            baseUrl: "http://localhost:8080",
+          },
+          namespace: "test-ns",
+          templateName: "other-template",
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining(
+          "references template 'python-secure'",
+        ),
+      });
+
+      // The watch must not have been started — otherwise a mismatch
+      // would leak an HTTP/2 watch stream on every rejected reattach.
+      expect(mockResolveSandboxName).not.toHaveBeenCalled();
+      // And the K8sClient must have been closed so the caller doesn't
+      // inherit a half-open transport.
+      expect(mockK8sClientClose).toHaveBeenCalled();
+    });
+
+    it("should throw SANDBOX_NOT_FOUND when claim is missing and templateName was supplied", async () => {
+      mockGetSandboxClaim.mockResolvedValueOnce(null);
+
+      await expect(
+        K8sAgentSandbox.fromExisting("claim-gone", {
+          connectionConfig: {
+            type: "direct",
+            baseUrl: "http://localhost:8080",
+          },
+          namespace: "test-ns",
+          templateName: "python-secure",
+        }),
+      ).rejects.toMatchObject({ code: "SANDBOX_NOT_FOUND" });
+
+      expect(mockResolveSandboxName).not.toHaveBeenCalled();
+      expect(mockK8sClientClose).toHaveBeenCalled();
+    });
+
+    it("should clear claimName only after successful delete so retry-after-failure works", async () => {
+      // fromExisting defaults to deleteOnClose=false (reattach doesn't
+      // own the claim). For this test we explicitly opt in so close()
+      // actually attempts the delete — that's the code path whose
+      // retry semantics we want to pin.
+      const sb = await K8sAgentSandbox.fromExisting("claim-retry", {
+        connectionConfig: { type: "direct", baseUrl: "http://localhost:8080" },
+        namespace: "test-ns",
+        deleteOnClose: true,
+      });
+
+      expect(sb.claimName).toBe("claim-retry");
+
+      mockDeleteSandboxClaim.mockRejectedValueOnce(
+        new Error("transient 500 from apiserver"),
+      );
+
+      await expect(sb.close()).rejects.toMatchObject({
+        message: expect.stringContaining("transient 500"),
+      });
+
+      // claimName must NOT have been cleared — otherwise a transient
+      // apiserver blip would silently hide the claim and the caller
+      // would have no handle to retry or clean up manually.
+      expect(sb.claimName).toBe("claim-retry");
+
+      // Retry succeeds (and since deleteSandboxClaim swallows 404s,
+      // even if the first delete actually did reach the apiserver, the
+      // retry is still idempotent).
+      mockDeleteSandboxClaim.mockResolvedValueOnce(undefined);
+      await expect(sb.close()).resolves.toBeUndefined();
+      expect(mockDeleteSandboxClaim).toHaveBeenCalledTimes(2);
     });
   });
 

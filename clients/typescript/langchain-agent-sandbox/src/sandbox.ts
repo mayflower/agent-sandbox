@@ -1154,6 +1154,15 @@ export class K8sAgentSandbox extends BaseSandbox {
 
   /**
    * Attach to an existing SandboxClaim.
+   *
+   * When `templateName` is supplied, the claim's
+   * `spec.sandboxTemplateRef.name` must match before reattach proceeds.
+   * A mismatch throws `K8sAgentSandboxError("INVALID_ARGUMENT")` rather
+   * than resuming into a sandbox provisioned from a different template
+   * (which would be the symptom of a label-key collision across
+   * template-scoped session caches, and is a cross-template spoofing
+   * vector in multi-tenant clusters). Omit `templateName` to keep the
+   * pre-check behavior for callers that don't track the template.
    */
   static async fromExisting(
     claimName: string,
@@ -1165,6 +1174,7 @@ export class K8sAgentSandbox extends BaseSandbox {
       resolveTimeout?: number;
       rootDir?: string;
       runtimeWorkDir?: string;
+      templateName?: string;
     },
   ): Promise<K8sAgentSandbox> {
     const namespace = options?.namespace ?? "default";
@@ -1175,6 +1185,60 @@ export class K8sAgentSandbox extends BaseSandbox {
     };
 
     const k8sClient = new K8sClient();
+
+    if (options?.templateName !== undefined) {
+      // Verify BEFORE starting the watch in resolveSandboxName — an
+      // unmatched template is a programmer error, not a race; surfacing
+      // it synchronously avoids leaking the watch stream and a (still
+      // cold) K8sClient to the caller.
+      let claim: Record<string, unknown> | null;
+      try {
+        claim = await k8sClient.getSandboxClaim(claimName, namespace);
+      } catch (fetchErr) {
+        try {
+          await k8sClient.close();
+        } catch (cleanupErr) {
+          console.warn(
+            `Failed to close K8sClient during fromExisting() unwind: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+          );
+        }
+        throw fetchErr;
+      }
+
+      if (claim === null) {
+        try {
+          await k8sClient.close();
+        } catch (cleanupErr) {
+          console.warn(
+            `Failed to close K8sClient during fromExisting() unwind: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+          );
+        }
+        throw new K8sAgentSandboxError(
+          `SandboxClaim '${claimName}' not found in namespace '${namespace}'`,
+          "SANDBOX_NOT_FOUND",
+        );
+      }
+
+      const spec = (claim as { spec?: { sandboxTemplateRef?: { name?: string } } })
+        .spec;
+      const actualTemplate = spec?.sandboxTemplateRef?.name;
+      if (actualTemplate !== options.templateName) {
+        try {
+          await k8sClient.close();
+        } catch (cleanupErr) {
+          console.warn(
+            `Failed to close K8sClient during fromExisting() unwind: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+          );
+        }
+        throw new K8sAgentSandboxError(
+          `SandboxClaim '${claimName}' references template '${actualTemplate ?? "<unset>"}', ` +
+            `not the requested '${options.templateName}'. Refusing to reattach ` +
+            `across different templates.`,
+          "INVALID_ARGUMENT",
+        );
+      }
+    }
+
     let sandboxId: string;
     try {
       sandboxId = await k8sClient.resolveSandboxName(

@@ -344,6 +344,44 @@ describe("K8sClient", () => {
     });
   });
 
+  describe("getSandboxClaim", () => {
+    it("should return claim object", async () => {
+      const claim = {
+        metadata: { name: "claim-1" },
+        spec: { sandboxTemplateRef: { name: "python-secure" } },
+      };
+      mockGetNamespacedCustomObject.mockResolvedValue(claim);
+
+      const result = await client.getSandboxClaim("claim-1", "default");
+      expect(result).toEqual(claim);
+      expect(mockGetNamespacedCustomObject).toHaveBeenCalledWith({
+        group: "extensions.agents.x-k8s.io",
+        version: "v1alpha1",
+        namespace: "default",
+        plural: "sandboxclaims",
+        name: "claim-1",
+      });
+    });
+
+    it("should return null for 404", async () => {
+      mockGetNamespacedCustomObject.mockRejectedValue(
+        Object.assign(new Error("Not Found"), { code: 404 }),
+      );
+
+      const result = await client.getSandboxClaim("gone", "default");
+      expect(result).toBeNull();
+    });
+
+    it("should throw on non-404 errors (wraps as K8S_API_ERROR)", async () => {
+      mockGetNamespacedCustomObject.mockRejectedValue(
+        Object.assign(new Error("Forbidden"), { code: 403 }),
+      );
+      await expect(
+        client.getSandboxClaim("protected", "default"),
+      ).rejects.toMatchObject({ code: "K8S_API_ERROR" });
+    });
+  });
+
   describe("listSandboxClaims", () => {
     it("should return claim names", async () => {
       mockListNamespacedCustomObject.mockResolvedValue({
