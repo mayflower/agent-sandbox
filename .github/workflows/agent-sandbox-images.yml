@@ -92,7 +92,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}
+          # Nested path `<org>/agent-sandbox/<name>` rather than the flat
+          # `<org>/<name>` form that the hand-rolled pushes used. The
+          # nested form auto-creates a fresh package on first push and
+          # links write-access to this repo via GITHUB_TOKEN — no org
+          # admin toggling "Manage Actions access" per package. Keeps
+          # all agent-sandbox artifacts under one namespace, too.
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/agent-sandbox/${{ matrix.name }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
