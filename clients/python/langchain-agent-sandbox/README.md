@@ -27,7 +27,7 @@ pip install "git+https://github.com/kubernetes-sigs/agent-sandbox.git@main#subdi
 pip install "git+https://github.com/kubernetes-sigs/agent-sandbox.git@main#subdirectory=clients/python/agentic-sandbox-client"
 ```
 
-**Requirements:** Python 3.11+, `k8s-agent-sandbox`, `deepagents>=0.5.0`, Kubernetes cluster with agent-sandbox controller, `kubectl`.
+**Requirements:** Python 3.11+, `k8s-agent-sandbox`, `deepagents>=0.5.9`, Kubernetes cluster with agent-sandbox controller, `kubectl`.
 
 ## Quickstart
 

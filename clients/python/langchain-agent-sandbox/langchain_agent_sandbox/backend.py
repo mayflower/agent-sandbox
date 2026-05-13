@@ -46,7 +46,7 @@ try:
     from deepagents.backends.utils import create_file_data
 except (ImportError, ModuleNotFoundError) as exc:
     raise ImportError(
-        "deepagents>=0.5.0 is required to use langchain-agent-sandbox"
+        "deepagents>=0.5.9 is required to use langchain-agent-sandbox"
     ) from exc
 
 try:
