@@ -104,7 +104,7 @@ You: Create a Python script that generates the first 20 Fibonacci numbers
 
 Agent: I'll create a Python script to generate Fibonacci numbers.
 
-[Writes /app/fibonacci.py]
+[Writes /workspace/fibonacci.py]
 [Executes: python fibonacci.py]
 
 Output:
@@ -127,10 +127,10 @@ The sandbox is running Debian GNU/Linux 12 (bookworm).
 You: Create a web scraper for Hacker News headlines and save them to a file
 
 Agent:
-1. [Writes /app/scraper.py with requests and BeautifulSoup]
+1. [Writes /workspace/scraper.py with requests and BeautifulSoup]
 2. [Executes: pip install requests beautifulsoup4]
 3. [Executes: python scraper.py]
-4. [Reads /app/headlines.txt to verify output]
+4. [Reads /workspace/headlines.txt to verify output]
 
 Successfully scraped 30 headlines and saved them to headlines.txt.
 ```
@@ -255,7 +255,7 @@ with AgentSandboxBackend.from_template(client, "python-deepagent") as backend:
 
 Specifically:
 
-- `deny_prefixes` is matched against the **lexically normalised** path, so `/app/../etc/passwd` is collapsed to `/etc/passwd` and then checked against your prefix list. `..` traversal is caught, but the check cannot follow symlinks — if a symlink under `/app/` points to `/etc/`, writes through that link can still reach `/etc/`. Harden this at the sandbox template (read-only mounts, SELinux/AppArmor, gVisor) rather than in Python.
+- `deny_prefixes` is matched against the **lexically normalised** path, so `/workspace/../etc/passwd` is collapsed to `/etc/passwd` and then checked against your prefix list. `..` traversal is caught, but the check cannot follow symlinks — if a symlink under `/workspace/` points to `/etc/`, writes through that link can still reach `/etc/`. Harden this at the sandbox template (read-only mounts, SELinux/AppArmor, gVisor) rather than in Python.
 - `deny_commands` does a substring match on the command string. It will catch `rm -rf /` but not `rm -r -f /`, `\rm`, shell aliases, here-docs, `$(...)`, `eval`, or any command path that doesn't literally contain your pattern. Treat the list as a speed bump against well-behaved agents, not a barrier against an adversary.
 - Filesystem state inside the sandbox is ephemeral by design, so a destructive command only damages that sandbox instance. Don't rely on `deny_commands` to protect shared state.
 

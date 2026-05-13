@@ -119,8 +119,8 @@ def parse_args():
     parser.add_argument(
         "--root-dir",
         type=str,
-        default=os.environ.get("LANGCHAIN_ROOT_DIR", "/app"),
-        help="Virtual filesystem root in sandbox (default: /app)",
+        default=os.environ.get("LANGCHAIN_ROOT_DIR", "/workspace"),
+        help="Virtual filesystem root in sandbox (default: /workspace)",
     )
     parser.add_argument(
         "--session-id",

@@ -27,9 +27,16 @@ spec:
     spec:
       containers:
         - name: sandbox-runtime
-          # Uses the python-runtime-sandbox image from examples
-          # Build with: docker build -t sandbox-runtime:latest examples/python-runtime-sandbox/
-          image: sandbox-runtime:latest
+          # Dedicated runtime image for deepagents — sibling directory
+          # `examples/langchain-deepagents-runtime/`. Mirrors the
+          # python-runtime-sandbox protocol but resolves its base
+          # directory from WORKDIR/SANDBOX_RUNTIME_DIR instead of
+          # hardcoding /app, and ships ripgrep + git in the base image.
+          #
+          # Build with:
+          #   docker build -t langchain-deepagents-runtime:latest \
+          #     examples/langchain-deepagents-runtime/
+          image: langchain-deepagents-runtime:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8888
@@ -43,8 +50,10 @@ spec:
               cpu: "1000m"
           securityContext:
             allowPrivilegeEscalation: false
-          # Working directory for agent files
-          workingDir: /app
+          # Deepagents convention: agents write outputs under /workspace.
+          # The runtime reads its base directory from WORKDIR, so this
+          # value also defines where the file API serves from.
+          workingDir: /workspace
 ---
 # Optional: WarmPool for faster sandbox startup
 # Uncomment to pre-warm sandbox pods

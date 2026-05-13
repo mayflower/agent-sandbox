@@ -92,9 +92,9 @@ echo "Using KUBECONFIG: ${KUBECONFIG}"
 # Step 2: Build and load sandbox runtime image
 echo ""
 echo "=== Step 2: Build Sandbox Runtime Image ==="
-cd "${PROJECT_ROOT}/examples/python-runtime-sandbox"
-docker build -t sandbox-runtime:latest .
-kind load docker-image sandbox-runtime:latest --name "${CLUSTER_NAME}"
+cd "${PROJECT_ROOT}/examples/langchain-deepagents-runtime"
+docker build -t langchain-deepagents-runtime:latest .
+kind load docker-image langchain-deepagents-runtime:latest --name "${CLUSTER_NAME}"
 
 # Step 3: Deploy SandboxTemplate
 echo ""

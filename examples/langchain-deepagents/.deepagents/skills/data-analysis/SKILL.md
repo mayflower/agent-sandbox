@@ -23,7 +23,7 @@ The sandbox should have Python with pandas available, or use basic Python for si
 ### CSV Summary
 ```python
 import csv
-with open('/app/data.csv') as f:
+with open('/workspace/data.csv') as f:
     reader = csv.DictReader(f)
     rows = list(reader)
     print(f"Rows: {len(rows)}")
@@ -33,7 +33,7 @@ with open('/app/data.csv') as f:
 ### JSON Exploration
 ```python
 import json
-with open('/app/data.json') as f:
+with open('/workspace/data.json') as f:
     data = json.load(f)
     print(f"Type: {type(data)}")
     if isinstance(data, list):

@@ -11,7 +11,7 @@ This skill helps you create, debug, and run Python scripts in the sandbox enviro
 
 ## Workflow
 1. Create the script file using `write`
-2. Execute with `execute("python /app/script.py")`
+2. Execute with `execute("python /workspace/script.py")`
 3. If errors occur, read the file, fix issues, and re-run
 
 ## Best Practices
@@ -25,8 +25,8 @@ This skill helps you create, debug, and run Python scripts in the sandbox enviro
 ### File Processing
 ```python
 import os
-for filename in os.listdir('/app/data'):
-    with open(f'/app/data/{filename}') as f:
+for filename in os.listdir('/workspace/data'):
+    with open(f'/workspace/data/{filename}') as f:
         # process file
 ```
 

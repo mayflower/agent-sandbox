@@ -30,12 +30,12 @@ extensions = {
     '.csv': 'data',
 }
 
-for filename in os.listdir('/app'):
+for filename in os.listdir('/workspace'):
     ext = os.path.splitext(filename)[1]
     if ext in extensions:
-        dest = f'/app/{extensions[ext]}'
+        dest = f'/workspace/{extensions[ext]}'
         os.makedirs(dest, exist_ok=True)
-        shutil.move(f'/app/{filename}', f'{dest}/{filename}')
+        shutil.move(f'/workspace/{filename}', f'{dest}/{filename}')
 ```
 
 ### By Date (modification time)
@@ -43,8 +43,8 @@ for filename in os.listdir('/app'):
 import os
 from datetime import datetime
 
-for filename in os.listdir('/app'):
-    path = f'/app/{filename}'
+for filename in os.listdir('/workspace'):
+    path = f'/workspace/{filename}'
     mtime = os.path.getmtime(path)
     date_str = datetime.fromtimestamp(mtime).strftime('%Y-%m')
     # organize by year-month
