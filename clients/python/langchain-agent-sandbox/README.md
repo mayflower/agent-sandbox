@@ -40,7 +40,7 @@ from langchain_agent_sandbox import AgentSandboxBackend
 client = SandboxClient()
 sandbox = client.create_sandbox(template="my-template")
 
-backend = AgentSandboxBackend.from_existing(sandbox, root_dir="/app")
+backend = AgentSandboxBackend.from_existing(sandbox, root_dir="/workspace")
 result = backend.execute("echo hello")
 # Caller manages lifecycle: client.delete_sandbox(sandbox.claim_name)
 ```
@@ -77,7 +77,7 @@ with AgentSandboxBackend.from_template(
     template_name="python-sandbox",
     session_id="thread-abc123",
 ) as backend:
-    backend.execute("echo 'state persists' > /app/state.txt")
+    backend.execute("echo 'state persists' > /workspace/state.txt")
     # On exit: detaches without deleting (session sandbox persists)
 
 # Later invocation: reattaches to the same sandbox
@@ -191,8 +191,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
     def from_existing(
         cls,
         sandbox: Sandbox,
-        root_dir: str = "/app",
-        allow_absolute_paths: bool = False,
+        root_dir: str = "/workspace",
     ) -> AgentSandboxBackend: ...
 
     @classmethod
@@ -201,8 +200,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         client: SandboxClient,
         template_name: str,
         namespace: str = "default",
-        root_dir: str = "/app",
-        allow_absolute_paths: bool = False,
+        root_dir: str = "/workspace",
         sandbox_ready_timeout: int = 180,
         labels: Optional[Dict[str, str]] = None,
         shutdown_after_seconds: Optional[int] = None,
@@ -274,16 +272,18 @@ When `strict_audit=True`, operations are refused if the audit callback raises.
 
 ### Path virtualization
 
-All file ops are virtualized under `root_dir` (default `/app`):
-- Public `/file.txt` maps to internal `/app/file.txt`
-- Path traversal (`../`) is blocked
-- NUL bytes and control characters are rejected
-- `allow_absolute_paths=True` permits writes outside root_dir
+All file ops are anchored on `root_dir` (default `/workspace`, must
+match the sandbox runtime image's WORKDIR):
+- Public `/file.txt` maps to internal `/workspace/file.txt`
+- Path traversal (`../`) is blocked — paths that resolve outside
+  `root_dir` are refused with `ValueError`
+- NUL bytes and ASCII control characters are rejected (closes a
+  C/syscall truncation vector that bypasses the `..` check)
 
 ### Execute cwd alignment
 
 `execute()` runs commands with `cd {root_dir} && {command}` so the shell's
-working directory matches the virtual root used by `ls`/`read`/`write`.
+working directory matches the root used by `ls`/`read`/`write`.
 
 ### Default timeout
 

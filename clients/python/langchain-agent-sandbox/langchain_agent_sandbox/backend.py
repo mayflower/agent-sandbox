@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import posixpath
 import re
@@ -265,11 +264,9 @@ class AgentSandboxBackend(SandboxBackendProtocol):
     def __init__(
         self,
         sandbox: Sandbox,
-        root_dir: str = "/app",
+        root_dir: str = "/workspace",
         manage_lifecycle: bool = False,
-        allow_absolute_paths: bool = False,
         sdk_client: Optional[SandboxClient] = None,
-        runtime_root: str = "/app",
         _template: Optional[str] = None,
         _namespace: str = "default",
         _sandbox_ready_timeout: int = 180,
@@ -280,17 +277,13 @@ class AgentSandboxBackend(SandboxBackendProtocol):
     ) -> None:
         if not root_dir.startswith("/"):
             raise ValueError(f"root_dir must be an absolute path, got: {root_dir}")
-        if not runtime_root.startswith("/"):
-            raise ValueError(f"runtime_root must be an absolute path, got: {runtime_root}")
         self._sandbox: Optional[Sandbox] = sandbox
+        # All file ops are anchored on this directory: the sandbox
+        # runtime serves its file API from here (WORKDIR), and our path
+        # sanitizer refuses paths that escape it. The default matches
+        # langchain-deepagents-runtime's WORKDIR /workspace.
         self._root_dir = posixpath.normpath(root_dir)
-        # Path the sandbox runtime treats as its filesystem base — the
-        # SDK file APIs (``files.read`` / ``files.list`` / ``files.exists``
-        # / ``files.write``) interpret their path argument as relative to
-        # this directory. Default ``/app`` matches the example runtime.
-        self._runtime_root = posixpath.normpath(runtime_root)
         self._manage_lifecycle = manage_lifecycle
-        self._allow_absolute_paths = allow_absolute_paths
         self._sdk_client = sdk_client
         self._template = _template
         self._namespace = _namespace
@@ -495,8 +488,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
     def from_existing(
         cls,
         sandbox: Sandbox,
-        root_dir: str = "/app",
-        allow_absolute_paths: bool = False,
+        root_dir: str = "/workspace",
     ) -> "AgentSandboxBackend":
         """Wrap an existing, already-connected Sandbox handle.
 
@@ -507,9 +499,9 @@ class AgentSandboxBackend(SandboxBackendProtocol):
 
         Args:
             sandbox: A connected Sandbox instance.
-            root_dir: Virtual root for file operations.
-            allow_absolute_paths: If True, write/upload operations may
-                target absolute paths outside root_dir.
+            root_dir: Filesystem root for all file operations. Must
+                match the runtime image's WORKDIR — the runtime
+                serves its file API from there.
 
         Returns:
             AgentSandboxBackend in unmanaged mode.
@@ -518,7 +510,6 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             sandbox=sandbox,
             root_dir=root_dir,
             manage_lifecycle=False,
-            allow_absolute_paths=allow_absolute_paths,
         )
 
     @classmethod
@@ -527,8 +518,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         client: SandboxClient,
         template_name: str,
         namespace: str = "default",
-        root_dir: str = "/app",
-        allow_absolute_paths: bool = False,
+        root_dir: str = "/workspace",
         sandbox_ready_timeout: int = 180,
         labels: Optional[Dict[str, str]] = None,
         shutdown_after_seconds: Optional[int] = None,
@@ -556,9 +546,9 @@ class AgentSandboxBackend(SandboxBackendProtocol):
                 the client — the adapter does not expose transport details.
             template_name: Name of the SandboxTemplate to claim.
             namespace: Kubernetes namespace for the sandbox.
-            root_dir: Virtual root for file operations.
-            allow_absolute_paths: If True, write/upload operations may
-                target absolute paths outside root_dir.
+            root_dir: Filesystem root for all file operations. Must
+                match the SandboxTemplate's container ``workingDir``
+                and the runtime image's WORKDIR.
             sandbox_ready_timeout: Timeout in seconds waiting for sandbox
                 readiness.
             labels: Kubernetes labels to attach to the SandboxClaim.
@@ -580,7 +570,6 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             sandbox=None,  # type: ignore[arg-type]
             root_dir=root_dir,
             manage_lifecycle=True,
-            allow_absolute_paths=allow_absolute_paths,
             sdk_client=client,
             _template=template_name,
             _namespace=namespace,
@@ -683,7 +672,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         with self._track_op():
             try:
                 internal_path = self._to_internal(path)
-                file_entries = sandbox.files.list(self._to_runtime_relative(internal_path))
+                file_entries = sandbox.files.list(self._internal_to_relative(internal_path))
             except Exception as e:
                 logger.warning("ls failed for path '%s': %s", path, e)
                 return LsResult(entries=[], error=f"Cannot list '{path}': {e}")
@@ -1185,18 +1174,10 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             raise RuntimeError(f"Cannot create parent directory '{parent}': {error_msg}")
 
     def _resolve_write_path(self, path: str) -> str:
-        """Resolve a write path while allowing absolute paths outside root_dir."""
+        """Resolve a write path, refusing empty input or anything that escapes root_dir."""
         candidate = path.strip()
         if not candidate:
             raise ValueError("empty path")
-        normalized = posixpath.normpath(candidate)
-        if (
-            self._allow_absolute_paths
-            and normalized.startswith("/")
-            and normalized != self._root_dir
-            and not normalized.startswith(self._root_dir + "/")
-        ):
-            return normalized
         return self._to_internal(candidate)
 
     def _to_internal(self, path: str) -> str:
@@ -1220,8 +1201,8 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         # Reject NUL bytes and ASCII control characters. A NUL byte in a
         # path passes Python's normpath check but gets truncated at the
         # C/syscall layer when the sandbox runtime processes it — so
-        # "/app/safe\x00../../etc/passwd" would pass our relpath defense
-        # but resolve to "/app/safe" on the filesystem.
+        # "/workspace/safe\x00../../etc/passwd" would pass our relpath defense
+        # but resolve to "/workspace/safe" on the filesystem.
         if any(ord(c) < 0x20 for c in stripped):
             raise ValueError(
                 f"Path contains ASCII control characters: {path!r}"
@@ -1237,92 +1218,40 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         return internal_path
 
     def _to_relative(self, path: str) -> str:
+        """Convert a public path to root_dir-relative form (for the runtime file API)."""
         internal_path = self._to_internal(path)
+        return self._internal_to_relative(internal_path)
+
+    def _internal_to_relative(self, internal_path: str) -> str:
+        """Convert an internal absolute path (under root_dir) to a path
+        relative to root_dir.
+
+        The runtime file API (``sandbox.files.*``) serves from the
+        runtime's WORKDIR, which is the same path we anchor ``root_dir``
+        on, so a root_dir-relative path is exactly what those endpoints
+        expect.
+
+        Callers always pass paths that have already been vetted by
+        ``_to_internal`` (which refuses anything that escapes root_dir),
+        so no second escape check is needed here.
+        """
         rel = posixpath.relpath(internal_path, self._root_dir)
         return "." if rel == "." else rel
 
-    def _to_runtime_relative(self, internal_path: str) -> str:
-        """Convert an internal absolute path to a runtime-root-relative path.
-
-        The sandbox runtime's file APIs (``files.read`` / ``files.list`` /
-        ``files.exists`` / ``files.write``) treat the path argument as
-        relative to ``runtime_root`` (default ``/app``). This helper
-        bridges the gap between our internal absolute paths (rooted under
-        ``root_dir``, which may differ from ``runtime_root``) and what the
-        runtime expects.
-
-        Raises ValueError if ``internal_path`` escapes ``runtime_root``.
-        """
-        rel = posixpath.relpath(internal_path, self._runtime_root)
-        if rel == ".." or rel.startswith("../"):
-            raise ValueError(
-                f"Internal path '{internal_path}' is outside runtime_root "
-                f"'{self._runtime_root}'"
-            )
-        return "." if rel == "." else rel
-
-    # ---- Dual-mode file IO helpers --------------------------------------
-    #
-    # The runtime file API (``sandbox.files.*``) is anchored at
-    # ``runtime_root`` and rejects paths outside it (as of the C4 SDK
-    # sanitizer). When ``allow_absolute_paths=True`` callers can target
-    # paths outside ``runtime_root`` (e.g. /tmp/...); for those we fall
-    # back to running shell commands to honor the same operations
-    # safely, so the feature keeps working without re-introducing the
-    # upload-path-traversal vector.
-
     def _write_bytes_at(self, internal_path: str, payload: bytes) -> None:
-        """Write ``payload`` to ``internal_path`` via file API or shell fallback."""
+        """Write ``payload`` to ``internal_path`` via the runtime file API."""
         assert self._sandbox is not None
-        try:
-            runtime_rel = self._to_runtime_relative(internal_path)
-        except ValueError:
-            runtime_rel = None
-        if runtime_rel is not None:
-            self._sandbox.files.write(runtime_rel, payload)
-            return
-        encoded = base64.b64encode(payload).decode("ascii")
-        pipeline = (
-            f"printf %s {shlex.quote(encoded)} "
-            f"| base64 -d > {shlex.quote(internal_path)}"
-        )
-        command = f"sh -c {shlex.quote(pipeline)}"
-        result = self._sandbox.commands.run(command)
-        if result.exit_code != 0:
-            detail = result.stderr.strip() or f"exit code {result.exit_code}"
-            raise RuntimeError(f"Write to '{internal_path}' failed: {detail}")
+        self._sandbox.files.write(self._internal_to_relative(internal_path), payload)
 
     def _read_bytes_at(self, internal_path: str) -> bytes:
-        """Read bytes from ``internal_path`` via file API or shell fallback."""
+        """Read bytes from ``internal_path`` via the runtime file API."""
         assert self._sandbox is not None
-        try:
-            runtime_rel = self._to_runtime_relative(internal_path)
-        except ValueError:
-            runtime_rel = None
-        if runtime_rel is not None:
-            return self._sandbox.files.read(runtime_rel)
-        command = f"sh -c {shlex.quote(f'base64 < {shlex.quote(internal_path)}')}"
-        result = self._sandbox.commands.run(command)
-        if result.exit_code != 0:
-            detail = result.stderr.strip() or f"exit code {result.exit_code}"
-            raise RuntimeError(f"Read from '{internal_path}' failed: {detail}")
-        try:
-            return base64.b64decode(result.stdout)
-        except Exception as e:
-            raise RuntimeError(f"Decode of '{internal_path}' output failed: {e}") from e
+        return self._sandbox.files.read(self._internal_to_relative(internal_path))
 
     def _path_exists_at(self, internal_path: str) -> bool:
-        """Check whether ``internal_path`` exists via file API or shell fallback."""
+        """Check whether ``internal_path`` exists via the runtime file API."""
         assert self._sandbox is not None
-        try:
-            runtime_rel = self._to_runtime_relative(internal_path)
-        except ValueError:
-            runtime_rel = None
-        if runtime_rel is not None:
-            return self._sandbox.files.exists(runtime_rel)
-        command = f"sh -c {shlex.quote(f'test -e {shlex.quote(internal_path)}')}"
-        result = self._sandbox.commands.run(command)
-        return result.exit_code == 0
+        return self._sandbox.files.exists(self._internal_to_relative(internal_path))
 
     def _to_public(self, internal_path: str) -> str:
         rel = posixpath.relpath(internal_path, self._root_dir)
@@ -1579,7 +1508,7 @@ class SandboxPolicyWrapper(SandboxBackendProtocol):
     Features:
     - deny_prefixes: Block writes/edits under certain paths
       (e.g., /etc, /sys). Paths are canonicalized before matching so
-      traversal-style bypasses like `/app/../etc` are caught.
+      traversal-style bypasses like `/workspace/../etc` are caught.
     - deny_commands: Substring match against execute() commands
       (e.g., "rm -rf"). This is trivially bypassable via aliases or
       shell variations -- treat it as a speed bump, not a barrier.
@@ -1721,7 +1650,7 @@ class SandboxPolicyWrapper(SandboxBackendProtocol):
         if any(normalized.startswith(prefix) for prefix in deny_prefixes):
             return True
 
-        # Catch traversal-style bypasses (e.g. /app/../etc) using canonical path checks.
+        # Catch traversal-style bypasses (e.g. /workspace/../etc) using canonical path checks.
         parts = [part for part in path.split("/") if part]
         if ".." in parts:
             canonical = self._normalize_prefix(self._canonicalize_path(path))

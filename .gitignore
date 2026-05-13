@@ -39,3 +39,6 @@ hermes-sandbox-knowledge.md
 .ship
 .claude
 .vscode
+# Python wheel build artifacts
+**/build/
+**/*.egg-info/

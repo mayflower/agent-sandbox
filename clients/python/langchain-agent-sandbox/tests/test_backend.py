@@ -249,8 +249,8 @@ def test_upload_files_creates_missing_parent_directory():
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(responses[0].error is None, f"Expected success, got {responses[0].error}")
     _require(len(mkdir_calls) == 1, f"Expected one mkdir, got {mkdir_calls}")
-    _require(mkdir_calls[0] == "/app/nested/dir/file.txt", f"Unexpected mkdir target: {mkdir_calls}")
-    # Paths are sent to the runtime relative to runtime_root (/app).
+    _require(mkdir_calls[0] == "/workspace/nested/dir/file.txt", f"Unexpected mkdir target: {mkdir_calls}")
+    # The runtime file API receives paths relative to root_dir.
     _require(uploaded == [("nested/dir/file.txt", b"payload")], f"Unexpected upload: {uploaded}")
 
 
@@ -265,9 +265,9 @@ def test_download_files_missing():
 
 
 def test_grep_returns_matches():
-    grep_output = "/app/test.py:10:def foo():\n/app/test.py:20:    foo()\n"
+    grep_output = "/workspace/test.py:10:def foo():\n/workspace/test.py:20:    foo()\n"
     client = StubSandbox(run_result=SimpleNamespace(stdout=grep_output, stderr="", exit_code=0))
-    backend = AgentSandboxBackend(client)
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
     backend._exists = lambda _: True
 
     result = backend.grep("foo", path="/")
@@ -291,7 +291,7 @@ def test_grep_error_uses_stderr_for_message():
     client = StubSandbox(
         run_result=SimpleNamespace(
             stdout="",
-            stderr="grep: /app/nonexistent: No such file or directory",
+            stderr="grep: /workspace/nonexistent: No such file or directory",
             exit_code=2,
         )
     )
@@ -343,9 +343,9 @@ def test_grep_error_reports_exit_code_when_both_streams_empty():
 
 def test_glob_returns_matching_files():
     find_output = (
-        "f\t0\t0\t/app/src/main.py\x00"
-        "f\t0\t0\t/app/src/utils.py\x00"
-        "f\t0\t0\t/app/tests/test_main.py\x00"
+        "f\t0\t0\t/workspace/src/main.py\x00"
+        "f\t0\t0\t/workspace/src/utils.py\x00"
+        "f\t0\t0\t/workspace/tests/test_main.py\x00"
     )
     client = StubSandbox(run_result=SimpleNamespace(stdout=find_output, stderr="", exit_code=0))
     backend = AgentSandboxBackend(client)
@@ -361,13 +361,13 @@ def test_glob_returns_matching_files():
 def test_glob_double_star_matches_root_and_nested():
     """`**/X` should match X at any depth including the root."""
     find_output = (
-        "f\t0\t0\t/app/target.txt\x00"
-        "f\t0\t0\t/app/sub/target.txt\x00"
-        "f\t0\t0\t/app/deep/nest/target.txt\x00"
-        "f\t0\t0\t/app/other.txt\x00"
+        "f\t0\t0\t/workspace/target.txt\x00"
+        "f\t0\t0\t/workspace/sub/target.txt\x00"
+        "f\t0\t0\t/workspace/deep/nest/target.txt\x00"
+        "f\t0\t0\t/workspace/other.txt\x00"
     )
     client = StubSandbox(run_result=SimpleNamespace(stdout=find_output, stderr="", exit_code=0))
-    backend = AgentSandboxBackend(client)
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend.glob("**/target.txt", path="/")
 
@@ -382,14 +382,14 @@ def test_glob_double_star_matches_root_and_nested():
 def test_glob_prefix_double_star_pattern():
     """`src/**/*.ts` should match .ts files at any depth under src/."""
     find_output = (
-        "f\t0\t0\t/app/src/a.ts\x00"
-        "f\t0\t0\t/app/src/dir/b.ts\x00"
-        "f\t0\t0\t/app/src/dir/nested/c.ts\x00"
-        "f\t0\t0\t/app/src/a.js\x00"
-        "f\t0\t0\t/app/other/x.ts\x00"
+        "f\t0\t0\t/workspace/src/a.ts\x00"
+        "f\t0\t0\t/workspace/src/dir/b.ts\x00"
+        "f\t0\t0\t/workspace/src/dir/nested/c.ts\x00"
+        "f\t0\t0\t/workspace/src/a.js\x00"
+        "f\t0\t0\t/workspace/other/x.ts\x00"
     )
     client = StubSandbox(run_result=SimpleNamespace(stdout=find_output, stderr="", exit_code=0))
-    backend = AgentSandboxBackend(client)
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend.glob("src/**/*.ts", path="/")
 
@@ -578,84 +578,29 @@ def test_edit_success_single_occurrence():
 
 
 def test_to_internal_blocks_sibling_directory_escape():
-    """Test that /appfoo doesn't match when root_dir=/app."""
+    """Test that /workspacefoo doesn't match when root_dir=/workspace."""
     client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app")
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
-    # This path should fail because /appfoo is not under /app
+    # This path should fail because /workspacefoo is not under /workspace
     with pytest.raises(ValueError):
-        backend._to_internal("/../appfoo/secret")
+        backend._to_internal("/../workspacefoo/secret")
 
 
 def test_to_internal_allows_root_dir_itself():
     client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app")
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend._to_internal("/")
 
-    _require(result == "/app", f"Expected /app, got {result}")
+    _require(result == "/workspace", f"Expected /workspace, got {result}")
 
 
-def test_write_allows_absolute_path_outside_root_dir():
-    """Writes to a path outside runtime_root go via commands.run + base64,
-    not through the multipart upload API (which is confined to /app)."""
-    # `test -e` returns non-zero when the file is missing, so both the
-    # existence probe and the base64 write should see exit_code=1 here
-    # (neither cares about stdout). Simpler: stub returns exit_code=1
-    # for the existence probe which maps to "does not exist".
-    class _SeqCommands:
-        def __init__(self):
-            self.calls: list = []
-
-        def run(self, command, **kwargs):
-            self.calls.append((command, kwargs))
-            # Existence probe: "test -e …" → exit 1 means missing.
-            if "test -e" in command:
-                return SimpleNamespace(stdout="", stderr="", exit_code=1)
-            # base64 write succeeds.
-            return SimpleNamespace(stdout="", stderr="", exit_code=0)
-
+def test_write_absolute_path_is_virtualized_under_root_dir():
+    """Caller's "/tmp/..." is virtualized under root_dir (no escape),
+    so exists/write target ``tmp/...`` relative to ``root_dir``."""
     client = StubSandbox()
-    client.commands = _SeqCommands()
-    backend = AgentSandboxBackend(client, root_dir="/app", allow_absolute_paths=True)
-    backend._ensure_parent_dir = lambda path: None
-
-    result = backend.write("/tmp/nested/file.txt", "hello")
-
-    _require(result.error is None, f"Unexpected write error: {result.error}")
-    # The upload endpoint must NOT be used for out-of-root paths.
-    _require(client.files.write_calls == [], f"Unexpected multipart upload: {client.files.write_calls}")
-    # Exactly two shell calls: one `test -e` existence probe, one base64 write.
-    shell_calls = [call for (call, _kwargs) in client.commands.calls]
-    _require(len(shell_calls) == 2, f"Expected 2 shell calls, got {shell_calls}")
-    _require("test -e" in shell_calls[0], f"First call should be existence probe, got: {shell_calls[0]}")
-    _require("/tmp/nested/file.txt" in shell_calls[0], f"Existence probe must target the absolute path: {shell_calls[0]}")
-    _require("base64 -d" in shell_calls[1], f"Second call should write via base64, got: {shell_calls[1]}")
-    _require("/tmp/nested/file.txt" in shell_calls[1], f"Write must target the absolute path: {shell_calls[1]}")
-
-
-def test_upload_files_allows_absolute_path_outside_root_dir():
-    client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app", allow_absolute_paths=True)
-    backend._file_state = lambda _: "missing"
-    backend._dir_state = lambda _: "writable"
-
-    responses = backend.upload_files({"/tmp/nested/file.txt": b"payload"})
-
-    _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
-    _require(responses[0].error is None, f"Expected success, got error={responses[0].error}")
-    _require(client.files.write_calls == [], f"Unexpected multipart upload: {client.files.write_calls}")
-    shell_calls = [call for (call, _kwargs) in client.commands.calls]
-    base64_writes = [call for call in shell_calls if "base64 -d" in call]
-    _require(len(base64_writes) == 1, f"Expected one base64 write, got {base64_writes}")
-    _require("/tmp/nested/file.txt" in base64_writes[0], f"Write target mismatch: {base64_writes[0]}")
-
-
-def test_write_absolute_path_defaults_to_root_virtualization():
-    """Without allow_absolute_paths the caller's /tmp/... is virtualized under
-    root_dir, so exists/write target /app/tmp/... (runtime-relative ``tmp/...``)."""
-    client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app")
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
     seen = {}
 
     def fake_exists(path, timeout=60):
@@ -669,7 +614,7 @@ def test_write_absolute_path_defaults_to_root_virtualization():
     result = backend.write("/tmp/nested/file.txt", "hello")
 
     _require(result.error is None, f"Unexpected write error: {result.error}")
-    # Runtime-relative under /app: "tmp/nested/file.txt" (no leading "/app/").
+    # Runtime-relative under /workspace: "tmp/nested/file.txt" (no leading "/workspace/").
     _require(seen["exists"] == "tmp/nested/file.txt", f"Unexpected path mapping: {seen['exists']}")
 
 
@@ -678,7 +623,7 @@ def test_ensure_parent_dir_raises_on_failure():
     backend = AgentSandboxBackend(client)
 
     with pytest.raises(RuntimeError) as exc_info:
-        backend._ensure_parent_dir("/app/nested/file.txt")
+        backend._ensure_parent_dir("/workspace/nested/file.txt")
 
     _require("Cannot create parent directory" in str(exc_info.value), f"Unexpected error: {exc_info.value}")
 
@@ -1036,35 +981,18 @@ def test_policy_wrapper_blocks_denied_paths():
 
 
 def test_policy_wrapper_canonicalizes_denied_paths():
-    """Policy checks should block normalized traversal paths like /app/../etc."""
+    """Policy checks should block normalized traversal paths like /workspace/../etc."""
     client = StubSandbox()
     backend = AgentSandboxBackend(client)
     wrapped = SandboxPolicyWrapper(backend, deny_prefixes=["/etc"])
 
-    result = wrapped.write("/app/../etc/passwd", "bad content")
+    result = wrapped.write("/workspace/../etc/passwd", "bad content")
     _require(result.error is not None, "Expected write to be denied")
     _require("Policy denied" in result.error, f"Unexpected error: {result.error}")
 
-    responses = wrapped.upload_files({"/app/../etc/shadow": b"bad"})
+    responses = wrapped.upload_files({"/workspace/../etc/shadow": b"bad"})
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(responses[0].error == "policy_denied", f"Expected policy_denied, got {responses[0].error}")
-
-
-def test_policy_wrapper_write_resolution_distinguishes_absolute_and_relative_prefixes():
-    """With absolute write mode enabled, /etc policy should not block relative etc/* under root_dir."""
-    client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app", allow_absolute_paths=True)
-    backend._exists = lambda _: False
-    backend._ensure_parent_dir = lambda _: None
-    backend._upload_bytes = lambda _path, _content: None
-    wrapped = SandboxPolicyWrapper(backend, deny_prefixes=["/etc"])
-
-    relative_result = wrapped.write("etc/config.txt", "safe")
-    _require(relative_result.error is None, f"Unexpected relative-path deny: {relative_result.error}")
-
-    absolute_result = wrapped.write("/etc/passwd", "bad")
-    _require(absolute_result.error is not None, "Expected absolute /etc write to be denied")
-    _require("Policy denied" in absolute_result.error, f"Unexpected error: {absolute_result.error}")
 
 
 def test_policy_wrapper_blocks_denied_commands():
@@ -1108,7 +1036,7 @@ def test_policy_wrapper_passes_allowed_operations():
     _require(result.output == "ok", f"Unexpected output: {result.output}")
 
     # Write to allowed path should work
-    result = wrapped.write("/app/file.txt", "content")
+    result = wrapped.write("/workspace/file.txt", "content")
     _require(result.error is None, f"Unexpected error: {result.error}")
 
 
@@ -1134,7 +1062,7 @@ def test_policy_wrapper_audit_log_called():
     _require(audit_calls[0][1] == "echo test", f"Unexpected target: {audit_calls[0][1]}")
 
     # Write should be logged
-    wrapped.write("/app/file.txt", "hello")
+    wrapped.write("/workspace/file.txt", "hello")
     _require(len(audit_calls) == 2, f"Expected 2 audit calls, got {len(audit_calls)}")
     _require(audit_calls[1][0] == "write", f"Expected write, got {audit_calls[1][0]}")
     _require(audit_calls[1][2]["size"] == 5, f"Expected size 5, got {audit_calls[1][2]}")
@@ -1152,7 +1080,7 @@ def test_policy_wrapper_upload_files_filters_denied():
 
     responses = wrapped.upload_files({
         "/etc/passwd": b"bad",
-        "/app/good.txt": b"good",
+        "/workspace/good.txt": b"good",
     })
 
     # Should have 2 responses
@@ -1166,7 +1094,7 @@ def test_policy_wrapper_upload_files_filters_denied():
 
 def test_policy_wrapper_read_operations_pass_through():
     """Test that read operations pass through without policy checks."""
-    grep_output = "/app/test.py:10:def foo():\n"
+    grep_output = "/workspace/test.py:10:def foo():\n"
     client = StubSandbox(
         run_result=SimpleNamespace(stdout=grep_output, stderr="", exit_code=0),
         read_bytes=b"content",
@@ -1230,7 +1158,7 @@ def test_upload_files_returns_upload_failed_on_exception():
     backend._file_state = lambda _: "missing"
     backend._dir_state = lambda _: "writable"
 
-    responses = backend.upload_files({"/app/file.txt": b"data"})
+    responses = backend.upload_files({"/workspace/file.txt": b"data"})
 
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(responses[0].error == "upload_failed", f"Expected upload_failed, got {responses[0].error}")
@@ -1243,7 +1171,7 @@ def test_download_files_returns_download_failed_on_exception():
     backend = AgentSandboxBackend(client)
     backend._file_state = lambda _: "file"
 
-    responses = backend.download_files(["/app/file.txt"])
+    responses = backend.download_files(["/workspace/file.txt"])
 
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(responses[0].error == "download_failed", f"Expected download_failed, got {responses[0].error}")
@@ -1331,7 +1259,7 @@ def test_id_property_returns_default_when_no_names():
 def test_grep_ignores_malformed_lines():
     """Test grep handles malformed output lines gracefully."""
     # Mix of valid and malformed lines
-    grep_output = "/app/file.py:10:valid match\nmalformed line without colons\n/app/file.py:invalid:line number\n"
+    grep_output = "/workspace/file.py:10:valid match\nmalformed line without colons\n/workspace/file.py:invalid:line number\n"
     client = StubSandbox(run_result=SimpleNamespace(stdout=grep_output, stderr="", exit_code=0))
     backend = AgentSandboxBackend(client)
     backend._exists = lambda _: True
@@ -1383,13 +1311,11 @@ def test_from_template_creates_managed_backend():
         template_name="test-template",
         namespace="test-ns",
         root_dir="/workspace",
-        allow_absolute_paths=True,
     )
 
     # Verify manage_lifecycle is True
     _require(backend._manage_lifecycle is True, "Expected manage_lifecycle=True")
     _require(backend._root_dir == "/workspace", f"Expected /workspace, got {backend._root_dir}")
-    _require(backend._allow_absolute_paths is True, "Expected allow_absolute_paths=True")
     _require(backend._template == "test-template", "Expected _template=test-template")
     _require(backend._namespace == "test-ns", "Expected _namespace=test-ns")
     _require(backend._sdk_client is mock_client, "Expected pre-built client")
@@ -1415,7 +1341,7 @@ def test_download_files_directory_returns_error():
     backend = AgentSandboxBackend(client)
     backend._file_state = lambda _: "dir"
 
-    responses = backend.download_files(["/app/somedir"])
+    responses = backend.download_files(["/workspace/somedir"])
 
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(responses[0].error == "is_directory", f"Expected is_directory, got {responses[0].error}")
@@ -1428,7 +1354,7 @@ def test_upload_files_existing_directory_returns_error():
     backend = AgentSandboxBackend(client)
     backend._file_state = lambda _: "dir"
 
-    responses = backend.upload_files({"/app/somedir": b"data"})
+    responses = backend.upload_files({"/workspace/somedir": b"data"})
 
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(responses[0].error == "is_directory", f"Expected is_directory, got {responses[0].error}")
@@ -1440,7 +1366,7 @@ def test_upload_files_permission_denied_file():
     backend = AgentSandboxBackend(client)
     backend._file_state = lambda _: "denied"
 
-    responses = backend.upload_files({"/app/restricted": b"data"})
+    responses = backend.upload_files({"/workspace/restricted": b"data"})
 
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(responses[0].error == "permission_denied", f"Expected permission_denied, got {responses[0].error}")
@@ -1502,7 +1428,7 @@ def test_strict_audit_blocks_write_when_audit_log_fails():
         backend, audit_log=failing_audit_log, strict_audit=True,
     )
 
-    result = wrapped.write("/app/file.txt", "content")
+    result = wrapped.write("/workspace/file.txt", "content")
 
     _require(result.error is not None, "Expected write to be refused")
     _require(
@@ -1528,7 +1454,7 @@ def test_strict_audit_blocks_upload_files_when_audit_log_fails():
         backend, audit_log=failing_audit_log, strict_audit=True,
     )
 
-    responses = wrapped.upload_files([("/app/file.txt", b"data")])
+    responses = wrapped.upload_files([("/workspace/file.txt", b"data")])
 
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(
@@ -1577,7 +1503,7 @@ def test_strict_audit_blocks_edit_when_audit_log_fails():
         backend, audit_log=failing_audit_log, strict_audit=True,
     )
 
-    result = wrapped.edit("/app/file.txt", "old", "new", replace_all=False)
+    result = wrapped.edit("/workspace/file.txt", "old", "new", replace_all=False)
 
     _require(result.error is not None, "Expected edit to be refused")
     _require(
@@ -1629,7 +1555,7 @@ def test_strict_audit_upload_files_preserves_deny_detail():
         backend, audit_log=failing_audit_log, strict_audit=True,
     )
 
-    responses = wrapped.upload_files([("/app/file.txt", b"data")])
+    responses = wrapped.upload_files([("/workspace/file.txt", b"data")])
 
     _require(len(responses) == 1, f"Expected 1 response, got {len(responses)}")
     _require(
@@ -1645,11 +1571,11 @@ def test_strict_audit_upload_files_preserves_deny_detail():
 @pytest.mark.parametrize(
     "operation,call",
     [
-        ("write", lambda w: w.write("/app/x.txt", "data")),
-        ("edit", lambda w: w.edit("/app/x.txt", "old", "new", False)),
+        ("write", lambda w: w.write("/workspace/x.txt", "data")),
+        ("edit", lambda w: w.edit("/workspace/x.txt", "old", "new", False)),
         (
             "upload",
-            lambda w: w.upload_files([("/app/x.txt", b"data")]),
+            lambda w: w.upload_files([("/workspace/x.txt", b"data")]),
         ),
     ],
 )
@@ -1815,17 +1741,17 @@ def test_exit_raises_exception_group_when_cleanup_fails_during_unwind():
 def test_to_internal_allows_dotdot_prefix_filenames():
     """Filenames like '..foo' are valid and should not be blocked."""
     client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app")
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend._to_internal("..foo")
 
-    _require(result == "/app/..foo", f"Expected /app/..foo, got {result}")
+    _require(result == "/workspace/..foo", f"Expected /workspace/..foo, got {result}")
 
 
 def test_to_internal_still_blocks_traversal():
     """Ensure actual traversal like '../' is still blocked after the ..foo fix."""
     client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app")
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     with pytest.raises(ValueError):
         backend._to_internal("../etc/passwd")
@@ -1852,9 +1778,9 @@ def test_read_error_propagates_exception_message():
 def test_grep_handles_colons_in_filenames():
     """grep with -Z uses null bytes to separate filenames, handling colons."""
     # Simulate grep -Z output: filename\0line_no:text
-    grep_output = "/app/config:prod.yaml\x0015:key: value\n/app/normal.txt\x005:other: match\n"
+    grep_output = "/workspace/config:prod.yaml\x0015:key: value\n/workspace/normal.txt\x005:other: match\n"
     client = StubSandbox(run_result=SimpleNamespace(stdout=grep_output, stderr="", exit_code=0))
-    backend = AgentSandboxBackend(client)
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend.grep("key", path="/")
 
@@ -1868,9 +1794,9 @@ def test_grep_handles_colons_in_filenames():
 
 def test_grep_fallback_without_null_bytes():
     """grep output without null bytes falls back to colon splitting."""
-    grep_output = "/app/file.py:10:def foo():\n"
+    grep_output = "/workspace/file.py:10:def foo():\n"
     client = StubSandbox(run_result=SimpleNamespace(stdout=grep_output, stderr="", exit_code=0))
-    backend = AgentSandboxBackend(client)
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend.grep("foo", path="/")
 
@@ -1882,17 +1808,17 @@ def test_grep_fallback_without_null_bytes():
 def test_glob_preserves_matches_on_partial_find_failure():
     """find returning non-zero exit (e.g. permission denied on one dir) should keep valid matches."""
     find_output = (
-        "f\t0\t0\t/app/accessible.py\x00"
-        "d\t0\t0\t/app/subdir\x00"
+        "f\t0\t0\t/workspace/accessible.py\x00"
+        "d\t0\t0\t/workspace/subdir\x00"
     )
     client = StubSandbox(
         run_result=SimpleNamespace(
             stdout=find_output,
-            stderr="find: '/app/restricted': Permission denied",
+            stderr="find: '/workspace/restricted': Permission denied",
             exit_code=1,
         )
     )
-    backend = AgentSandboxBackend(client)
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend.glob("*", path="/")
 
@@ -1908,7 +1834,7 @@ def test_glob_returns_error_on_total_find_failure():
     client = StubSandbox(
         run_result=SimpleNamespace(
             stdout="",
-            stderr="find: '/app/nonexistent': No such file or directory",
+            stderr="find: '/workspace/nonexistent': No such file or directory",
             exit_code=1,
         )
     )
@@ -1923,11 +1849,11 @@ def test_glob_returns_error_on_total_find_failure():
 
 def test_glob_partial_failure_returns_matches_without_error():
     """Partial find failure (some stdout produced) should keep matches, no error."""
-    find_output = "f\t0\t0\t/app/accessible.py\x00"
+    find_output = "f\t0\t0\t/workspace/accessible.py\x00"
     client = StubSandbox(
         run_result=SimpleNamespace(
             stdout=find_output,
-            stderr="find: '/app/restricted': Permission denied",
+            stderr="find: '/workspace/restricted': Permission denied",
             exit_code=1,
         )
     )
@@ -1953,21 +1879,21 @@ def test_glob_find_command_uses_symlink_follow():
 def test_to_internal_allows_dotdot_prefix_in_nested_path():
     """Filenames like '..config' inside subdirectories should not be blocked."""
     client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app")
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend._to_internal("subdir/..config")
 
-    _require(result == "/app/subdir/..config", f"Expected /app/subdir/..config, got {result}")
+    _require(result == "/workspace/subdir/..config", f"Expected /workspace/subdir/..config, got {result}")
 
 
 def test_to_internal_allows_triple_dot_filename():
     """Triple-dot '...' is a valid filename and should not be blocked."""
     client = StubSandbox()
-    backend = AgentSandboxBackend(client, root_dir="/app")
+    backend = AgentSandboxBackend(client, root_dir="/workspace")
 
     result = backend._to_internal("...")
 
-    _require(result == "/app/...", f"Expected /app/..., got {result}")
+    _require(result == "/workspace/...", f"Expected /workspace/..., got {result}")
 
 
 def test_grep_command_includes_z_flag():
@@ -1983,7 +1909,7 @@ def test_grep_command_includes_z_flag():
 
 def test_grep_skips_null_line_with_no_colon_in_remainder():
     """grep output with null byte but malformed remainder should be skipped."""
-    grep_output = "/app/good.py\x005:match\n/app/bad.py\x00malformed\n"
+    grep_output = "/workspace/good.py\x005:match\n/workspace/bad.py\x00malformed\n"
     client = StubSandbox(run_result=SimpleNamespace(stdout=grep_output, stderr="", exit_code=0))
     backend = AgentSandboxBackend(client)
 
@@ -2321,8 +2247,8 @@ def test_glob_populates_size_and_modified_at():
     """glob() with the new find -printf format should populate size + modified_at."""
     # The new format is: "f <size> <mod_time> <path>" or "d <size> <mod_time> <path>"
     find_output = (
-        "f\t1024\t1700000000.0\t/app/data.csv\x00"
-        "d\t4096\t1700000001.0\t/app/subdir\x00"
+        "f\t1024\t1700000000.0\t/workspace/data.csv\x00"
+        "d\t4096\t1700000001.0\t/workspace/subdir\x00"
     )
     client = StubSandbox(run_result=SimpleNamespace(stdout=find_output, stderr="", exit_code=0))
     backend = AgentSandboxBackend(client)
@@ -2390,7 +2316,7 @@ def test_to_internal_rejects_nul_byte():
     backend = AgentSandboxBackend(client)
 
     with pytest.raises(ValueError, match="control characters"):
-        backend._to_internal("/app/report\x00attack.sh")
+        backend._to_internal("/workspace/report\x00attack.sh")
 
 
 def test_to_internal_rejects_newline():
@@ -2398,7 +2324,7 @@ def test_to_internal_rejects_newline():
     backend = AgentSandboxBackend(client)
 
     with pytest.raises(ValueError, match="control characters"):
-        backend._to_internal("/app/foo\nbar.txt")
+        backend._to_internal("/workspace/foo\nbar.txt")
 
 
 def test_edit_error_includes_exception_message():
@@ -2430,7 +2356,7 @@ def test_file_state_rejects_unexpected_output():
     )
     backend = AgentSandboxBackend(client)
 
-    state = backend._file_state("/app/test.txt")
+    state = backend._file_state("/workspace/test.txt")
     _require(state == "error", f"Expected 'error' for unexpected output, got {state!r}")
 
 
@@ -2441,7 +2367,7 @@ def test_dir_state_rejects_unexpected_output():
     )
     backend = AgentSandboxBackend(client)
 
-    state = backend._dir_state("/app/dir")
+    state = backend._dir_state("/workspace/dir")
     _require(state == "error", f"Expected 'error' for unexpected output, got {state!r}")
 
 
@@ -2706,14 +2632,14 @@ def test_execute_prepends_cd_to_root_dir():
 
 
 def test_execute_cwd_default_root_dir():
-    """Default root_dir /app should appear in the cd prefix."""
+    """Default root_dir /workspace should appear in the cd prefix."""
     client = StubSandbox(run_result=SimpleNamespace(stdout="", stderr="", exit_code=0))
     backend = AgentSandboxBackend(client)
 
     backend.execute("echo hi")
 
     cmd = client.commands.last_command
-    _require(cmd == "sh -c 'cd /app && echo hi'", f"Unexpected command: {cmd}")
+    _require(cmd == "sh -c 'cd /workspace && echo hi'", f"Unexpected command: {cmd}")
 
 
 # ── SandboxPolicyWrapper protocol conformance ──
