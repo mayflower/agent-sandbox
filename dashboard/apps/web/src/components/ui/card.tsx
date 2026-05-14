@@ -9,7 +9,10 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-xl border bg-card text-card-foreground shadow",
+      // Border replaced with a soft shadow + gradient surface; consumers
+      // can still add an explicit `border …` accent class for emphasis
+      // (warning / danger callouts) and it will layer on top.
+      "rounded-xl text-card-foreground surface-soft",
       className
     )}
     {...props}
