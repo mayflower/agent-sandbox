@@ -104,14 +104,29 @@
 }
 
 @layer components {
-  /** Soft-surfaced card: subtle gradient, no border, soft drop-shadow. */
+  /** Soft-surfaced card: subtle gradient, no border, soft drop-shadow.
+   *  Sets `background-image` (not the `background` shorthand) so the
+   *  `background-color` defined here stays in effect; accent callouts that
+   *  want a tinted surface should override `background-image` directly
+   *  rather than relying on a `bg-*` utility that would be hidden by the
+   *  opaque gradient. */
   .surface-soft {
-    background: linear-gradient(180deg, hsl(var(--card-grad-from)) 0%, hsl(var(--card-grad-to)) 100%);
+    background-color: hsl(var(--card));
+    background-image: linear-gradient(180deg, hsl(var(--card-grad-from)) 0%, hsl(var(--card-grad-to)) 100%);
     box-shadow: var(--shadow-soft);
   }
   .surface-soft-lg {
-    background: linear-gradient(180deg, hsl(var(--card-grad-from)) 0%, hsl(var(--card-grad-to)) 100%);
+    background-color: hsl(var(--card));
+    background-image: linear-gradient(180deg, hsl(var(--card-grad-from)) 0%, hsl(var(--card-grad-to)) 100%);
     box-shadow: var(--shadow-soft-lg);
+  }
+  /** Amber accent surface used for warning callouts. */
+  .surface-amber {
+    background-image: linear-gradient(180deg, hsl(45 100% 96%) 0%, hsl(38 95% 90%) 100%);
+    box-shadow: var(--shadow-soft);
+  }
+  .dark .surface-amber {
+    background-image: linear-gradient(180deg, hsl(38 60% 12%) 0%, hsl(38 55% 8%) 100%);
   }
 }
 

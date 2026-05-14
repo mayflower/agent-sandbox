@@ -10,32 +10,47 @@ import type {
   WarmPoolLiveView,
 } from "./types.js";
 
-const STARTING_AGE_MIN_SECONDS = 5; // discard fresh sandboxes from p95 noise
+/** Discard sandboxes younger than this from cold-start p95 noise. */
+export const STARTING_AGE_MIN_SECONDS = 5;
+/** Claim age past which "pending" counts as a failed pod. */
+export const PENDING_CLAIM_FAIL_SECONDS = 300;
 
-function percentile(values: number[], p: number): number {
+export function percentile(values: number[], p: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const rank = Math.min(sorted.length - 1, Math.max(0, Math.floor((p / 100) * sorted.length)));
   return sorted[rank] ?? 0;
 }
 
-function failedPods(claims: ClaimLiveView[], sandboxes: SandboxLiveView[]): number {
-  // A pod is considered failed when the parent sandbox is active but missing
-  // runtime, or the claim is pending past a meaningful threshold.
+/** A pod is failed when its sandbox is active-but-missing-runtime, or its
+ *  claim is pending past PENDING_CLAIM_FAIL_SECONDS. Shared between the
+ *  server-side metrics projection and the web KPI override. */
+export function failedPods(claims: ClaimLiveView[], sandboxes: SandboxLiveView[]): number {
   const sbCount = sandboxes.filter(
     (sandbox) => sandbox.objectState === "active" && sandbox.runtimeState === "missing",
   ).length;
   const claimCount = claims.filter(
-    (claim) => claim.state === "pending" && claim.ageSeconds > 300,
+    (claim) => claim.state === "pending" && claim.ageSeconds > PENDING_CLAIM_FAIL_SECONDS,
   ).length;
   return sbCount + claimCount;
 }
 
-function warmPoolFillRatio(pools: WarmPoolLiveView[]): number {
+export function warmPoolFillRatio(pools: WarmPoolLiveView[]): number {
   const desired = pools.reduce((sum, pool) => sum + pool.desiredReplicas, 0);
   if (desired === 0) return 0;
   const ready = pools.reduce((sum, pool) => sum + pool.readyReplicas, 0);
   return ready / desired;
+}
+
+/** p95 of "starting" sandbox ages, with the same min-age cutoff as the
+ *  server-side metrics projection. */
+export function sandboxStartingP95(sandboxes: SandboxLiveView[]): number {
+  return percentile(
+    sandboxes
+      .filter((s) => s.runtimeState === "starting" && s.ageSeconds >= STARTING_AGE_MIN_SECONDS)
+      .map((s) => s.ageSeconds),
+    95,
+  );
 }
 
 export interface ProjectionInputs {
@@ -55,9 +70,6 @@ export function projectSnapshotToMetricsRow(inputs: ProjectionInputs): SnapshotM
   const problems = classifyProblems(snapshot, now, inventory);
 
   const claimAges = inventory.claims.filter((c) => c.state === "pending").map((c) => c.ageSeconds);
-  const startingAges = inventory.sandboxes
-    .filter((s) => s.runtimeState === "starting" && s.ageSeconds >= STARTING_AGE_MIN_SECONDS)
-    .map((s) => s.ageSeconds);
 
   const controllerHealth = inputs.controllerHealth ?? snapshot.controllerHealth;
   const controllerAvailable: 0 | 1 = controllerHealth?.available ? 1 : 0;
@@ -78,7 +90,7 @@ export function projectSnapshotToMetricsRow(inputs: ProjectionInputs): SnapshotM
     problemWarnings: problems.filter((p) => p.severity === "warning").length,
     claimAgeP50: percentile(claimAges, 50),
     claimAgeP95: percentile(claimAges, 95),
-    sandboxStartingP95: percentile(startingAges, 95),
+    sandboxStartingP95: sandboxStartingP95(inventory.sandboxes),
     warmPoolFillRatio: warmPoolFillRatio(inventory.warmPools),
     failedPods: failedPods(inventory.claims, inventory.sandboxes),
     controllerAvailable,

@@ -65,4 +65,35 @@ describe("KpiStrip", () => {
     expect(screen.getByText("0%")).toBeInTheDocument();
     expect(screen.getByText("$0.00")).toBeInTheDocument();
   });
+
+  it("uses currentOverride values in place of the latest series row", () => {
+    const series: HistorySeries = {
+      resolution: "15s",
+      rows: [row({ activeSandboxes: 99, pendingClaims: 99 })],
+    };
+    render(
+      wrap(
+        <KpiStrip
+          series={series}
+          currentOverride={{ activeSandboxes: 3, pendingClaims: 5, warmPoolFillRatio: 0.25 }}
+        />,
+      ),
+    );
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("25%")).toBeInTheDocument();
+    expect(screen.queryByText("99")).toBeNull();
+  });
+
+  it("dims metrics flagged in dimmedMetrics and annotates the tooltip", () => {
+    const series: HistorySeries = {
+      resolution: "15s",
+      rows: [row({ costPerHourUsd: 1.5, activeSandboxes: 2 })],
+    };
+    const { container } = render(
+      wrap(<KpiStrip series={series} dimmedMetrics={new Set(["costPerHourUsd"])} />),
+    );
+    expect(container.querySelector(".opacity-60")).not.toBeNull();
+    expect(container.querySelector('[title*="cluster-wide"]')).not.toBeNull();
+  });
 });

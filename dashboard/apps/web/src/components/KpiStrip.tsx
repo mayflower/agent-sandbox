@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Sparkline } from "@/components/Sparkline";
 import { useFilters } from "@/lib/filters";
+import { cn } from "@/lib/utils";
 
 export interface KpiDescriptor {
   id: string;
@@ -62,9 +63,12 @@ export interface KpiStripProps {
    *  aggregate cluster counts only, so we recompute the current value from
    *  the filtered live data. The sparkline still tracks the cluster trend. */
   currentOverride?: Partial<Record<MetricKey, number>>;
+  /** Metrics that cannot be recomputed for the active scope. Rendered with
+   *  reduced opacity and a `(cluster-wide)` tooltip suffix. */
+  dimmedMetrics?: ReadonlySet<MetricKey>;
 }
 
-export function KpiStrip({ series, kpis = DEFAULT_KPIS, currentOverride }: KpiStripProps) {
+export function KpiStrip({ series, kpis = DEFAULT_KPIS, currentOverride, dimmedMetrics }: KpiStripProps) {
   const filters = useFilters();
   const latest = series?.rows.at(-1);
 
@@ -85,10 +89,17 @@ export function KpiStrip({ series, kpis = DEFAULT_KPIS, currentOverride }: KpiSt
           ? override
           : latest ? (Number(latest[kpi.metric]) || 0) : 0;
         const formatter = kpi.formatter ?? formatInt;
+        const dimmed = dimmedMetrics?.has(kpi.metric) ?? false;
+        const tooltip = dimmed
+          ? `${kpi.tooltip ?? kpi.label} (cluster-wide; not scoped to active filter)`
+          : kpi.tooltip;
         return (
           <Card
             key={kpi.id}
-            className="cursor-pointer transition hover:bg-muted/50"
+            className={cn(
+              "cursor-pointer transition hover:bg-muted/50",
+              dimmed && "opacity-60",
+            )}
             onClick={() => {
               if (kpi.onClick) {
                 kpi.onClick();
@@ -96,7 +107,7 @@ export function KpiStrip({ series, kpis = DEFAULT_KPIS, currentOverride }: KpiSt
               }
               if (kpi.id === "cost") filters.setView("cost");
             }}
-            title={kpi.tooltip}
+            title={tooltip}
           >
             <CardContent className="space-y-1 p-3">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{kpi.label}</div>

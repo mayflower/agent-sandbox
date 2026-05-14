@@ -1,7 +1,11 @@
 import {
   computeLiveOverview,
+  failedPods,
+  sandboxStartingP95,
   viewForKind,
+  warmPoolFillRatio,
   type InventoryView,
+  type MetricKey,
 } from "@agent-sandbox/dashboard-shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -194,18 +198,23 @@ function AppContent() {
   const filterIsActive = filters.namespace !== "" || filters.search !== "" || filters.brokenOnly;
   const kpiOverride = useMemo(() => {
     if (!filterIsActive) return undefined;
-    const warmPoolReady = filteredWarmPools.reduce((sum, pool) => sum + pool.readyReplicas, 0);
-    const warmPoolDesired = filteredWarmPools.reduce((sum, pool) => sum + pool.desiredReplicas, 0);
-    const failedPods =
-      filteredSandboxes.filter((sandbox) => sandbox.objectState === "active" && sandbox.runtimeState === "missing").length +
-      filteredClaims.filter((claim) => !claim.effectiveReady && claim.ageSeconds > 60).length;
     return {
       activeSandboxes: liveOverview.totals.activeSandboxes,
       pendingClaims: liveOverview.totals.pendingClaims,
-      warmPoolFillRatio: warmPoolDesired > 0 ? warmPoolReady / warmPoolDesired : 0,
-      failedPods,
+      warmPoolFillRatio: warmPoolFillRatio(filteredWarmPools),
+      // Use the shared predicates so the override matches what the recorded
+      // metric series would say for the same scope.
+      failedPods: failedPods(filteredClaims, filteredSandboxes),
+      sandboxStartingP95: sandboxStartingP95(filteredSandboxes),
     };
   }, [filterIsActive, filteredSandboxes, filteredClaims, filteredWarmPools, liveOverview]);
+
+  // Tiles we can't recompute scoped (cost requires a server-side cost engine
+  // against the filtered subset). Dim them so the user knows they remain
+  // cluster-wide while a filter is active.
+  const kpiDimmed = useMemo<Set<MetricKey>>(() => {
+    return filterIsActive ? new Set<MetricKey>(["costPerHourUsd"]) : new Set();
+  }, [filterIsActive]);
 
   const totalRawCount =
     (sandboxesQuery.data?.length ?? 0) +
@@ -323,7 +332,11 @@ function AppContent() {
         <div className="flex-1 space-y-3 p-4 md:p-6">
           {view === "overview" && (
             <div className="space-y-3">
-              <KpiStrip series={historyQuery.data ?? null} {...(kpiOverride ? { currentOverride: kpiOverride } : {})} />
+              <KpiStrip
+                series={historyQuery.data ?? null}
+                {...(kpiOverride ? { currentOverride: kpiOverride } : {})}
+                dimmedMetrics={kpiDimmed}
+              />
               <OverviewSection overview={liveOverview} />
               <div className="grid gap-3 xl:grid-cols-[minmax(280px,1fr)_minmax(0,2fr)_minmax(280px,1fr)]">
                 <ProblemsPanel problems={problemsQuery.data ?? []} dag={problemDagQuery.data ?? null} />
@@ -405,9 +418,9 @@ function AppSidebar({
             onHome();
           }}
           className="flex items-center gap-2 rounded-md outline-none hover:opacity-90 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-          aria-label="Back to overview"
+          title="agent-sandbox · back to overview"
         >
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground">
+          <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground">
             <LayoutDashboard className="h-3.5 w-3.5" />
           </span>
           <span className="truncate text-sm font-semibold">agent-sandbox</span>
