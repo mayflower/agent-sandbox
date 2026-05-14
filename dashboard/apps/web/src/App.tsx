@@ -187,6 +187,26 @@ function AppContent() {
     [filteredSandboxes, filteredClaims, filteredWarmPools],
   );
 
+  // KPI overrides recomputed from the filtered live inventory so the strip
+  // matches the OverviewSection below it when a namespace/search filter is
+  // active. The history series is unscoped and would otherwise show
+  // cluster-wide totals next to a namespace-scoped phase breakdown.
+  const filterIsActive = filters.namespace !== "" || filters.search !== "" || filters.brokenOnly;
+  const kpiOverride = useMemo(() => {
+    if (!filterIsActive) return undefined;
+    const warmPoolReady = filteredWarmPools.reduce((sum, pool) => sum + pool.readyReplicas, 0);
+    const warmPoolDesired = filteredWarmPools.reduce((sum, pool) => sum + pool.desiredReplicas, 0);
+    const failedPods =
+      filteredSandboxes.filter((sandbox) => sandbox.objectState === "active" && sandbox.runtimeState === "missing").length +
+      filteredClaims.filter((claim) => !claim.effectiveReady && claim.ageSeconds > 60).length;
+    return {
+      activeSandboxes: liveOverview.totals.activeSandboxes,
+      pendingClaims: liveOverview.totals.pendingClaims,
+      warmPoolFillRatio: warmPoolDesired > 0 ? warmPoolReady / warmPoolDesired : 0,
+      failedPods,
+    };
+  }, [filterIsActive, filteredSandboxes, filteredClaims, filteredWarmPools, liveOverview]);
+
   const totalRawCount =
     (sandboxesQuery.data?.length ?? 0) +
     (claimsQuery.data?.length ?? 0) +
@@ -196,9 +216,19 @@ function AppContent() {
     filteredSandboxes.length + filteredClaims.length + filteredWarmPools.length + filteredTemplates.length;
   const filterActive = visibleCount !== totalRawCount;
 
-  const problems = problemsQuery.data ?? [];
-  const errorCount = problems.filter((problem) => problem.severity === "error").length;
-  const warningCount = problems.filter((problem) => problem.severity === "warning").length;
+  // Apply the same namespace+search+broken filter to the problem list so the
+  // status bar's "X errors · Y warnings" reflects the visible scope. The
+  // /api/problems endpoint returns cluster-aggregate problems; without
+  // filtering they include namespaces the user isn't currently looking at.
+  const scopedProblems = useMemo(() => {
+    return (problemsQuery.data ?? []).filter(
+      (problem) =>
+        matchesSearch(problem.resourceName, problem.namespace, filters.search) &&
+        (!filters.namespace || problem.namespace === filters.namespace),
+    );
+  }, [problemsQuery.data, filters.search, filters.namespace]);
+  const errorCount = scopedProblems.filter((problem) => problem.severity === "error").length;
+  const warningCount = scopedProblems.filter((problem) => problem.severity === "warning").length;
   const controllerHealth = controllerHealthQuery.data ?? null;
   const controllerDown = controllerHealth !== null && !controllerHealth.available;
   const overall: "ok" | "warning" | "error" =
@@ -288,7 +318,7 @@ function AppContent() {
         <div className="flex-1 space-y-3 p-4 md:p-6">
           {view === "overview" && (
             <div className="space-y-3">
-              <KpiStrip series={historyQuery.data ?? null} />
+              <KpiStrip series={historyQuery.data ?? null} {...(kpiOverride ? { currentOverride: kpiOverride } : {})} />
               <OverviewSection overview={liveOverview} />
               <div className="grid gap-3 xl:grid-cols-[minmax(280px,1fr)_minmax(0,2fr)_minmax(280px,1fr)]">
                 <ProblemsPanel problems={problemsQuery.data ?? []} dag={problemDagQuery.data ?? null} />
