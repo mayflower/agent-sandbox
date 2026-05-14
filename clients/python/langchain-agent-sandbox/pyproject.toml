@@ -18,6 +18,12 @@ classifiers = [
 dependencies = [
     "k8s-agent-sandbox",
     "deepagents>=0.5.9",
+    # Used directly by ``context_hub_http_client``. It is already a
+    # transitive dependency through ``k8s-agent-sandbox``'s async
+    # transport, but pinning it here makes the relationship explicit so
+    # a future SDK refactor that drops httpx doesn't silently break the
+    # HTTP context-hub client.
+    "httpx>=0.27",
 ]
 
 [project.urls]

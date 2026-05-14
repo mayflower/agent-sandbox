@@ -313,6 +313,211 @@ uv sync
 uv run pytest tests/ -v
 ```
 
+## Context Hub sync
+
+`ContextHubSyncedSandboxBackend` wraps any `SandboxBackendProtocol` and
+treats one absolute mount point (default `/context`) as a virtualised
+filesystem backed by a versioned Context Hub repo. `execute()` and
+non-mount file ops pass through to the inner backend; reads/writes
+under the mount go through the hub.
+
+### Hub-first commit semantics
+
+- `commit_mode="per_operation"` (default): every successful write/edit/
+  upload triggers a hub commit *before* the file is materialised in
+  the sandbox. A hub failure leaves the sandbox unchanged.
+- `commit_mode="on_exit"`: writes are visible inside the session
+  immediately (read-your-writes) but the hub push is deferred until
+  `__exit__`. A flush failure on exit propagates to the caller.
+- `commit_mode="manual"`: writes are buffered and only pushed when
+  `backend.flush()` is called. A successful `flush()` clears the
+  buffer; a second call with no new writes is a no-op. A failed
+  `flush()` (e.g. transient `HubError`) preserves the buffer so a
+  retry can re-attempt the same commit.
+
+Two helpers expose the pending state:
+
+- `backend.pending_changes()` — hub-relative paths that the next flush
+  will send (empty under `per_operation`).
+- `backend.is_cache_stale()` — set after a hub conflict or a
+  post-commit materialization failure. Call `refresh()`-equivalent
+  re-enter to resync.
+
+### Write modes
+
+- `context_write_mode="context_hub"` (default): writes upsert — the
+  same semantics as `ContextHubBackend.write`.
+- `context_write_mode="deepagents"`: writes are create-only, matching
+  `AgentSandboxBackend.write`. Useful when you want to prevent agents
+  from clobbering existing hub files.
+
+### Linked entries
+
+Agent and skill links (`AgentEntry`, `SkillEntry`) inside a hub
+snapshot are *not* materialised as files by default; they live in
+`backend.get_linked_entries()`. Survival across commits is the hub
+server's responsibility — diff-style servers keep unmentioned entries,
+replace-style servers do not. Pass `materialize_linked=True` to also
+render each link as a small JSON pointer file under the mount.
+
+### Example
+
+```python
+from langchain_agent_sandbox import (
+    AgentSandboxBackend,
+    ContextHubSyncedSandboxBackend,
+    create_context_hub_synced_backend_factory,
+)
+from langchain_agent_sandbox.context_hub_http_client import (
+    ContextHubHttpClient,
+)
+from k8s_agent_sandbox import SandboxClient
+
+sandbox_client = SandboxClient()
+hub_client = ContextHubHttpClient(
+    base_url="https://context-hub.example.com",
+    api_key="...",
+)
+
+with AgentSandboxBackend.from_template(
+    sandbox_client, "python-sandbox"
+) as inner:
+    backend = ContextHubSyncedSandboxBackend(
+        inner=inner,
+        hub_client=hub_client,
+        identifier="team/research-agent:production",
+        mount_prefix="/context",
+    )
+    with backend:
+        result = backend.execute(
+            "ls /context && cat /context/AGENTS.md"
+        )
+```
+
+### Factory pattern
+
+```python
+from deepagents import create_deep_agent
+from langchain_agent_sandbox import (
+    create_context_hub_synced_backend_factory,
+    create_sandbox_backend_factory,
+)
+
+inner_factory = create_sandbox_backend_factory("python-sandbox")
+factory = create_context_hub_synced_backend_factory(
+    inner_factory=inner_factory,
+    hub_client=hub_client,
+    identifier="team/research-agent",
+)
+agent = create_deep_agent(backend=factory)
+```
+
+### Path exclusions
+
+Writes under the mount are refused for a default deny-list so a stray
+`.env` or `.git/config` never reaches the hub:
+
+```
+.git, .git/**
+.hg,  .hg/**
+.svn, .svn/**
+.env, .env.*, **/.env, **/.env.*
+node_modules, node_modules/**, **/node_modules/**
+__pycache__, __pycache__/**, **/__pycache__/**
+.venv, .venv/**, **/.venv/**
+dist,  dist/**
+build, build/**
+```
+
+The list applies on hydration (excluded paths in the hub snapshot are
+dropped from the cache before materialization, with a warning log) and
+on every subsequent `write()` / `edit()` / `upload_files()` under the
+mount. Pass `excluded_globs=[...]` (or `[]`) to the constructor to
+override. Paths outside the mount are the inner backend's
+responsibility.
+
+Per-file failure codes returned by `upload_files()`:
+
+- `"excluded"` — path matches an exclude glob
+- `"too_large"` — payload exceeds `max_file_bytes`
+- `"not_utf8"` — payload is not valid UTF-8 (the hub stores text only)
+- `"invalid_path"` — path traversal, empty, or control characters
+- `"upload_failed"` — inner sandbox refused the write
+
+### Size limits
+
+`max_file_bytes` (default 10 MiB), `max_total_bytes` (default 100 MiB)
+and `max_files` (default 10 000) guard against runaway hub snapshots
+exhausting local memory or sandbox quota. Hydration enforces all three
+at `__enter__` time; `write()`, `edit()` and `upload_files()` enforce
+`max_file_bytes` per change.
+
+### Wrapper ordering with `SandboxPolicyWrapper`
+
+`SandboxPolicyWrapper` and `ContextHubSyncedSandboxBackend` both
+implement `SandboxBackendProtocol`, so they compose in either order —
+but the order matters:
+
+| Order | Hub writes | Hub reads | Sandbox shell |
+|---|---|---|---|
+| `Policy(Synced(inner))` | guarded by policy | guarded by policy | guarded by policy |
+| `Synced(Policy(inner))` | **not guarded** (hub commit fires before inner write) | served from cache | guarded by policy |
+
+**Recommended:** put the policy **outside** the synced backend when you
+want deny prefixes / commands to cover hub commits too. Put it
+**inside** only when policy enforcement is purely about which shell
+commands and inner-sandbox writes are allowed — e.g. a wrapper that
+denies `/etc/**` writes on the inner filesystem but does not care
+about the hub.
+
+### Migrating from `CompositeBackend` / `ContextHubBackend`
+
+If you currently combine LangChain's `ContextHubBackend` and a
+deepagents `LocalBackend` via `CompositeBackend`, the synced backend
+collapses both into one:
+
+```python
+# Before
+composite = CompositeBackend(
+    backends={
+        "/context": ContextHubBackend(hub_client, "team/agent"),
+        "/": LocalBackend(...),
+    },
+)
+
+# After
+backend = ContextHubSyncedSandboxBackend(
+    inner=AgentSandboxBackend.from_template(client, "python-sandbox"),
+    hub_client=hub_client,
+    identifier="team/agent",
+    mount_prefix="/context",
+)
+```
+
+What changes:
+
+* Reads under `/context` come from the materialized snapshot, so
+  shell commands like `cat /context/AGENTS.md` work without round-
+  tripping to the hub.
+* Writes under `/context` are hub-first by default (`per_operation`).
+  If you need to batch commits or run drafts before pushing, use
+  `commit_mode="on_exit"` or `commit_mode="manual"`.
+* `CompositeBackend.grep` regex semantics become literal here — the
+  same as the rest of the DeepAgents sandbox protocol.
+* `ContextHubBackend.write` upsert semantics are preserved by
+  `context_write_mode="context_hub"` (default).
+* Linked `AgentEntry` / `SkillEntry` are kept in
+  `get_linked_entries()` and remain in the snapshot whenever the hub
+  server preserves unmentioned paths across commits.
+
+### LangSmith interop
+
+`langsmith` is **not** a runtime dependency. The
+`ContextHubClientProtocol` accepts any object with the right shape,
+and `entry_from_mapping` duck-types on `.type` / `.content` /
+`.repo_handle`, so passing a LangSmith Context Hub client (or its
+entry classes) works without any additional imports.
+
 ## Related
 
 - [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) - Kubernetes CRD and controller

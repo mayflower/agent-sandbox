@@ -721,7 +721,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             non-empty file. Empty files always succeed with empty content
             regardless of offset.
         """
-        sandbox = self._assert_sandbox()
+        self._assert_sandbox()
         with self._track_op():
             try:
                 internal_path = self._to_internal(file_path)
@@ -931,7 +931,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
             WriteResult with error=None on success, or error message on failure.
             Fails if file already exists.
         """
-        sandbox = self._assert_sandbox()
+        self._assert_sandbox()
         with self._track_op():
             try:
                 internal_path = self._resolve_write_path(file_path)
@@ -978,7 +978,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         Returns:
             EditResult with error=None on success, or error message on failure.
         """
-        sandbox = self._assert_sandbox()
+        self._assert_sandbox()
         with self._track_op():
             try:
                 internal_path = self._resolve_write_path(file_path)
@@ -1054,7 +1054,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         Returns:
             List of FileUploadResponse for each file.
         """
-        sandbox = self._assert_sandbox()
+        self._assert_sandbox()
         with self._track_op():
             pairs = cast(
                 List[Tuple[str, bytes]],
@@ -1133,7 +1133,7 @@ class AgentSandboxBackend(SandboxBackendProtocol):
         Returns:
             List of FileDownloadResponse for each file.
         """
-        sandbox = self._assert_sandbox()
+        self._assert_sandbox()
         with self._track_op():
             responses: List[FileDownloadResponse] = []
             for path in paths:

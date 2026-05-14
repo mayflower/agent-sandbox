@@ -17,9 +17,49 @@ from .backend import (
     SandboxPolicyWrapper,
     create_sandbox_backend_factory,
 )
+from .context_hub_client import (
+    ContextHubClientProtocol,
+    HubAuthError,
+    HubConflictError,
+    HubError,
+    HubNotFoundError,
+    HubRateLimitError,
+    HubValidationError,
+)
+from .context_hub_models import (
+    AgentContext,
+    AgentEntry,
+    FileEntry,
+    SkillContext,
+    SkillEntry,
+)
+from .context_hub_sync import (
+    CommitMode,
+    ContextHubSyncedSandboxBackend,
+    ContextWriteMode,
+    RepoType,
+    create_context_hub_synced_backend_factory,
+)
 
 __all__ = [
+    "AgentContext",
+    "AgentEntry",
     "AgentSandboxBackend",
+    "CommitMode",
+    "ContextHubClientProtocol",
+    "ContextHubSyncedSandboxBackend",
+    "ContextWriteMode",
+    "FileEntry",
+    "HubAuthError",
+    "HubConflictError",
+    "HubError",
+    "HubNotFoundError",
+    "HubRateLimitError",
+    "HubValidationError",
+    "RepoType",
     "SandboxPolicyWrapper",
+    "SkillContext",
+    "SkillEntry",
+    "create_context_hub_synced_backend_factory",
     "create_sandbox_backend_factory",
 ]

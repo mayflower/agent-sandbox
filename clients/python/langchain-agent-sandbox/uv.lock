@@ -595,6 +595,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
+    { name = "httpx" },
     { name = "k8s-agent-sandbox" },
 ]
 
@@ -613,6 +614,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", specifier = ">=0.5.9" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "k8s-agent-sandbox", editable = "../agentic-sandbox-client" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.21.0" },
