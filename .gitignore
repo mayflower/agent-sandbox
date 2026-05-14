@@ -42,3 +42,10 @@ hermes-sandbox-knowledge.md
 # Python wheel build artifacts
 **/build/
 **/*.egg-info/
+
+# Node.js / frontend artifacts (TypeScript clients, dashboard)
+**/node_modules/
+**/.next/
+**/test-results/
+**/playwright-report/
+**/.turbo/
