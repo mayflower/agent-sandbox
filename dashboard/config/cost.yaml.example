@@ -1,0 +1,10 @@
+# Cost configuration for the agent-sandbox dashboard.
+# Copy to `config/cost.yaml` and adjust to your cloud bill to enable the Cost view.
+cpu_per_core_hour_usd: 0.045
+memory_per_gib_hour_usd: 0.006
+storage_per_gib_month_usd: 0.10
+node_pool_overrides:
+  - selector:
+      node.kubernetes.io/instance-type: n2-standard-8
+    cpu_per_core_hour_usd: 0.038
+    memory_per_gib_hour_usd: 0.005

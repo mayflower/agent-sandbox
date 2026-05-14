@@ -208,6 +208,12 @@ export interface InventoryProvider {
   deleteSandbox?(namespace: string, name: string): Promise<void>;
   deleteClaim?(namespace: string, name: string): Promise<void>;
   reconcileSandbox?(namespace: string, name: string): Promise<void>;
+  setSandboxReplicas?(namespace: string, name: string, replicas: number): Promise<void>;
+  patchClaimLifecycle?(
+    namespace: string,
+    name: string,
+    lifecycle: { shutdownTime?: string },
+  ): Promise<void>;
 }
 
 export type SandboxResourceKind = "Sandbox" | "SandboxClaim" | "SandboxWarmPool" | "SandboxTemplate";
@@ -400,4 +406,267 @@ export interface EventView {
   type?: string;
   message: string;
   eventTime?: string;
+}
+
+// ----------------------------------------------------------------------------
+// Foundation A: Server-side Ring-Buffer + History API (M1)
+// ----------------------------------------------------------------------------
+
+export type HistoryResolution = "15s" | "5m";
+
+/** Skinny projection of a Snapshot — ~30 scalars used for sparklines + trend KPIs. */
+export interface SnapshotMetricsRow {
+  /** Epoch milliseconds. The ring-buffer key. */
+  timestampMs: number;
+  // Counts
+  totalSandboxes: number;
+  activeSandboxes: number;
+  runtimeReadySandboxes: number;
+  runtimeMissingSandboxes: number;
+  pendingClaims: number;
+  claimsWithReadinessMismatch: number;
+  warmPoolReadyTotal: number;
+  warmPoolDesiredTotal: number;
+  templatesInUse: number;
+  unmappedSandboxes: number;
+  // Problem aggregates
+  problemErrors: number;
+  problemWarnings: number;
+  // Latency/health (seconds)
+  claimAgeP50: number;
+  claimAgeP95: number;
+  sandboxStartingP95: number;
+  // Warm-pool aggregates
+  warmPoolFillRatio: number;
+  failedPods: number;
+  // Controller
+  controllerAvailable: 0 | 1;
+  // Cost (optional — 0 when cost.yaml absent)
+  costPerHourUsd: number;
+  idleSpendPerHourUsd: number;
+}
+
+export const METRIC_KEYS: ReadonlyArray<keyof Omit<SnapshotMetricsRow, "timestampMs">> = [
+  "totalSandboxes",
+  "activeSandboxes",
+  "runtimeReadySandboxes",
+  "runtimeMissingSandboxes",
+  "pendingClaims",
+  "claimsWithReadinessMismatch",
+  "warmPoolReadyTotal",
+  "warmPoolDesiredTotal",
+  "templatesInUse",
+  "unmappedSandboxes",
+  "problemErrors",
+  "problemWarnings",
+  "claimAgeP50",
+  "claimAgeP95",
+  "sandboxStartingP95",
+  "warmPoolFillRatio",
+  "failedPods",
+  "controllerAvailable",
+  "costPerHourUsd",
+  "idleSpendPerHourUsd",
+] as const;
+
+export type MetricKey = (typeof METRIC_KEYS)[number];
+
+export interface HistorySeries {
+  resolution: HistoryResolution;
+  rows: SnapshotMetricsRow[];
+}
+
+// ----------------------------------------------------------------------------
+// Foundation D: Causality Resolver (M2)
+// ----------------------------------------------------------------------------
+
+export interface ProblemNode {
+  id: string;
+  kind: ProblemKind;
+  severity: "info" | "warning" | "error";
+  summary: string;
+  parentId?: string;
+  affectedResources: Array<{
+    namespace: string;
+    resourceKind: SandboxResourceKind;
+    resourceName: string;
+  }>;
+}
+
+export interface ProblemDag {
+  /** Root ids — likely root causes, no parent. */
+  roots: string[];
+  /** All nodes indexed by id. */
+  byId: Record<string, ProblemNode>;
+}
+
+export interface ProblemDoc {
+  kind: ProblemKind;
+  title: string;
+  /** 1-paragraph plain-language explanation. */
+  explanation: string;
+  /** First diagnostic checks the operator should run. */
+  firstChecks: string[];
+}
+
+// ----------------------------------------------------------------------------
+// M3: Timeline + Story
+// ----------------------------------------------------------------------------
+
+export type TimelineEventKind =
+  | "pod"
+  | "sandbox"
+  | "claim"
+  | "warmpool"
+  | "transition"
+  | "router";
+
+export interface TimelineEvent {
+  /** Stable id derived from source+resource+timestamp+reason. */
+  id: string;
+  kind: TimelineEventKind;
+  /** ISO 8601 event time. */
+  at: string;
+  resourceKind: SandboxResourceKind | "Pod" | "Router";
+  resourceName: string;
+  namespace: string;
+  /** Short reason code (e.g. PodScheduled, Ready=True). */
+  reason: string;
+  /** Operator-facing message. */
+  message: string;
+  /** "Normal", "Warning". */
+  severity: "info" | "warning" | "error";
+  /** Optional structured detail, free-form JSON. */
+  detail?: Record<string, unknown>;
+}
+
+export interface StoryRow {
+  at: string;
+  verb: string;
+  detail: string;
+  severity: "info" | "warning" | "error";
+  source: TimelineEvent;
+}
+
+// ----------------------------------------------------------------------------
+// M4: Cost
+// ----------------------------------------------------------------------------
+
+export interface CostRates {
+  cpuPerCoreHourUsd: number;
+  memoryPerGibHourUsd: number;
+  storagePerGibMonthUsd: number;
+  /** Per-nodepool overrides keyed by nodeSelector match. */
+  nodePoolOverrides: Array<{
+    selector: Record<string, string>;
+    cpuPerCoreHourUsd?: number;
+    memoryPerGibHourUsd?: number;
+  }>;
+}
+
+export interface CostBreakdown {
+  cpuUsd: number;
+  memoryUsd: number;
+  storageUsd: number;
+  totalUsd: number;
+}
+
+export interface PodCostInput {
+  cpuCores: number;
+  memoryGib: number;
+  storageGib: number;
+  uptimeHours: number;
+  nodeLabels?: Record<string, string>;
+}
+
+export interface SnapshotCost {
+  totalUsdPerHour: number;
+  idleUsdPerHour: number;
+  byKind: {
+    sandboxesUsdPerHour: number;
+    warmPoolsUsdPerHour: number;
+  };
+  rates: CostRates;
+}
+
+export interface CostRow {
+  /** Grouping value, e.g. template name, namespace, or label value. */
+  group: string;
+  /** $/hour the running instances of this group are costing now. */
+  usdPerHour: number;
+  /** Subset of usdPerHour attributed to idle warm-pool members. */
+  idleUsdPerHour: number;
+  /** Per-instance count contributing to this row. */
+  instanceCount: number;
+}
+
+export interface CostByDimension {
+  groupBy: "template" | "namespace" | string; // string == "label:<key>"
+  rows: CostRow[];
+}
+
+// ----------------------------------------------------------------------------
+// M5: Identity + Self-Service Actions
+// ----------------------------------------------------------------------------
+
+export interface Identity {
+  user: string;
+  role: "operator" | "tenant";
+  /** Namespaces visible to this user. Empty array means operator/all. */
+  namespaces: string[];
+  groups: string[];
+}
+
+export interface ActionEnvelope<T extends string> {
+  kind: SandboxResourceKind;
+  namespace: string;
+  name: string;
+  action: T;
+}
+
+// ----------------------------------------------------------------------------
+// M6: Diff
+// ----------------------------------------------------------------------------
+
+export interface ResourceRef {
+  namespace: string;
+  resourceKind: SandboxResourceKind;
+  resourceName: string;
+}
+
+export interface SnapshotDiff {
+  fromAt: string;
+  toAt: string;
+  added: ResourceRef[];
+  removed: ResourceRef[];
+  transitions: Array<
+    ResourceRef & {
+      field: string;
+      from: string;
+      to: string;
+    }
+  >;
+}
+
+// ----------------------------------------------------------------------------
+// M8: Behavior
+// ----------------------------------------------------------------------------
+
+export interface SandboxBehavior {
+  namespace: string;
+  name: string;
+  cpuMilliUsed?: number;
+  cpuMilliRequested?: number;
+  memoryMibUsed?: number;
+  memoryMibRequested?: number;
+  /** True if cpu usage > 2× template median (anomaly badge). */
+  anomaly: boolean;
+}
+
+export interface TemplateBehavior {
+  name: string;
+  medianSessionSeconds?: number;
+  p95ColdStartSeconds?: number;
+  eventCountLast24h: number;
+  failureCountLast24h: number;
 }
