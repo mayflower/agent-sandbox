@@ -45,7 +45,7 @@ export function TimeScrubber({ series }: TimeScrubberProps) {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-3 py-1.5 text-[11px]">
+    <div className="flex flex-wrap items-center gap-2 bg-muted/20 px-3 py-1.5 text-[11px] shadow-[0_1px_0_0_hsl(220_30%_85%/0.6)] dark:shadow-[0_1px_0_0_hsl(222_40%_18%/0.6)]">
       <span className="font-semibold uppercase tracking-wide text-muted-foreground">Time</span>
       <input
         type="range"

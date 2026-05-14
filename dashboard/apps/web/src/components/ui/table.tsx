@@ -20,7 +20,15 @@ const TableHeader = React.forwardRef<
   HTMLTableSectionElement,
   React.HTMLAttributes<HTMLTableSectionElement>
 >(({ className, ...props }, ref) => (
-  <thead ref={ref} className={cn("[&_tr]:border-b", className)} {...props} />
+  // Header gets a soft underline shadow rather than a hard border.
+  <thead
+    ref={ref}
+    className={cn(
+      "[&_tr]:shadow-[0_1px_0_0_hsl(220_30%_85%/0.6)] dark:[&_tr]:shadow-[0_1px_0_0_hsl(222_40%_18%/0.6)]",
+      className,
+    )}
+    {...props}
+  />
 ))
 TableHeader.displayName = "TableHeader"
 
@@ -28,11 +36,7 @@ const TableBody = React.forwardRef<
   HTMLTableSectionElement,
   React.HTMLAttributes<HTMLTableSectionElement>
 >(({ className, ...props }, ref) => (
-  <tbody
-    ref={ref}
-    className={cn("[&_tr:last-child]:border-0", className)}
-    {...props}
-  />
+  <tbody ref={ref} className={cn(className)} {...props} />
 ))
 TableBody.displayName = "TableBody"
 
@@ -42,10 +46,7 @@ const TableFooter = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <tfoot
     ref={ref}
-    className={cn(
-      "border-t bg-muted/50 font-medium [&>tr]:last:border-b-0",
-      className
-    )}
+    className={cn("bg-muted/50 font-medium", className)}
     {...props}
   />
 ))
@@ -55,11 +56,12 @@ const TableRow = React.forwardRef<
   HTMLTableRowElement,
   React.HTMLAttributes<HTMLTableRowElement>
 >(({ className, ...props }, ref) => (
+  // Soft zebra striping replaces hard row borders; hover still highlights.
   <tr
     ref={ref}
     className={cn(
-      "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted",
-      className
+      "transition-colors odd:bg-transparent even:bg-muted/30 hover:bg-muted/60 data-[state=selected]:bg-muted",
+      className,
     )}
     {...props}
   />

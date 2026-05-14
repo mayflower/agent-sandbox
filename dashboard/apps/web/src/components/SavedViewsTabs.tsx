@@ -66,7 +66,7 @@ export function SavedViewsTabs() {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-1 border-b px-3 py-1 text-xs">
+    <div className="flex flex-wrap items-center gap-1 bg-background/60 px-3 py-1 text-xs shadow-[0_1px_0_0_hsl(220_30%_85%/0.6)] dark:shadow-[0_1px_0_0_hsl(222_40%_18%/0.6)]">
       {BUILTINS.map((view) => (
         <button
           key={view.id}

@@ -4,6 +4,20 @@
 
 @layer base {
   :root {
+    /* Page gradient stops — head-to-toe wash of cool neutral, light to
+     * slightly more saturated. Used by `body` below. */
+    --bg-grad-from: 220 40% 99%;
+    --bg-grad-via: 220 38% 97%;
+    --bg-grad-to: 220 36% 94%;
+    /* Card gradient stops — pure white at top, with a faint cool tint at
+     * the bottom-right to give surfaces depth without a hard border. */
+    --card-grad-from: 0 0% 100%;
+    --card-grad-to: 220 35% 96%;
+    /* Soft shadow used in place of borders on cards/tables. Tuned to read
+     * on both the page gradient and accent-coloured backgrounds. */
+    --shadow-soft: 0 1px 2px hsl(220 40% 50% / 0.04), 0 6px 24px -10px hsl(220 40% 30% / 0.12);
+    --shadow-soft-lg: 0 2px 4px hsl(220 40% 50% / 0.06), 0 24px 48px -16px hsl(220 40% 30% / 0.15);
+
     --background: 0 0% 100%;
     --foreground: 222.2 47.4% 11.2%;
     --card: 0 0% 100%;
@@ -35,6 +49,14 @@
   }
 
   .dark {
+    --bg-grad-from: 222 47% 6%;
+    --bg-grad-via: 222 45% 4%;
+    --bg-grad-to: 222 45% 3%;
+    --card-grad-from: 222 47% 8%;
+    --card-grad-to: 222 47% 5%;
+    --shadow-soft: 0 1px 2px hsl(0 0% 0% / 0.25), 0 8px 24px -10px hsl(0 0% 0% / 0.45);
+    --shadow-soft-lg: 0 2px 4px hsl(0 0% 0% / 0.3), 0 24px 48px -16px hsl(0 0% 0% / 0.5);
+
     --background: 222.2 47.4% 5%;
     --foreground: 210 40% 98%;
     --card: 222.2 47.4% 7%;
@@ -70,9 +92,26 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, hsl(var(--bg-grad-from)) 0%, transparent 60%),
+      radial-gradient(1000px 800px at 110% 10%, hsl(var(--bg-grad-via)) 0%, transparent 55%),
+      linear-gradient(180deg, hsl(var(--bg-grad-from)) 0%, hsl(var(--bg-grad-via)) 45%, hsl(var(--bg-grad-to)) 100%);
+    background-attachment: fixed;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+  }
+}
+
+@layer components {
+  /** Soft-surfaced card: subtle gradient, no border, soft drop-shadow. */
+  .surface-soft {
+    background: linear-gradient(180deg, hsl(var(--card-grad-from)) 0%, hsl(var(--card-grad-to)) 100%);
+    box-shadow: var(--shadow-soft);
+  }
+  .surface-soft-lg {
+    background: linear-gradient(180deg, hsl(var(--card-grad-from)) 0%, hsl(var(--card-grad-to)) 100%);
+    box-shadow: var(--shadow-soft-lg);
   }
 }
 

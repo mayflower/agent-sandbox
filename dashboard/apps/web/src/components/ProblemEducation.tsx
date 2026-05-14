@@ -7,7 +7,7 @@ export function ProblemEducation({ kind }: { kind: ProblemKind }) {
   const doc = lookupProblemDoc(kind);
   if (!doc) return null;
   return (
-    <Card className="border-dashed bg-muted/20">
+    <Card className="border border-dashed bg-muted/20">
       <CardContent className="space-y-2 p-3 text-xs">
         <div className="font-semibold">{doc.title}</div>
         <p className="text-muted-foreground">{doc.explanation}</p>

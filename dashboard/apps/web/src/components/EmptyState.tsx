@@ -13,7 +13,7 @@ export interface EmptyStateProps {
 
 export function EmptyState({ title, description, nextSteps = [], icon }: EmptyStateProps) {
   return (
-    <Card className="border-dashed">
+    <Card className="border border-dashed">
       <CardContent className="space-y-2 p-4 text-center">
         <div className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-full bg-muted">
           {icon ?? <Sparkles className="h-5 w-5 text-muted-foreground" />}
