@@ -1,0 +1,3 @@
+cpu_per_core_hour_usd: 0.045
+memory_per_gib_hour_usd: 0.006
+storage_per_gib_month_usd: 0.10

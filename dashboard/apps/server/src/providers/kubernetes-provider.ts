@@ -36,6 +36,8 @@ export interface ClusterReader {
   deleteSandbox(namespace: string, name: string): Promise<void>;
   deleteClaim(namespace: string, name: string): Promise<void>;
   patchSandboxAnnotations(namespace: string, name: string, annotations: Record<string, string>): Promise<void>;
+  patchSandboxReplicas?(namespace: string, name: string, replicas: number): Promise<void>;
+  patchClaimLifecycle?(namespace: string, name: string, lifecycle: { shutdownTime?: string }): Promise<void>;
 }
 
 function asItems<T>(value: unknown): T[] {
@@ -57,7 +59,7 @@ async function safeListCustomObject<T>(
       items: asItems<T>(response),
     };
   } catch (error) {
-    if (error instanceof k8s.HttpError && error.statusCode === 404) {
+    if (httpStatusCodeOf(error) === 404) {
       return {
         supported: false,
         items: [],
@@ -65,6 +67,12 @@ async function safeListCustomObject<T>(
     }
     throw error;
   }
+}
+
+function httpStatusCodeOf(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const candidate = (error as { statusCode?: unknown; code?: unknown }).statusCode ?? (error as { code?: unknown }).code;
+  return typeof candidate === "number" ? candidate : undefined;
 }
 
 const SERVICE_ACCOUNT_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
@@ -120,7 +128,8 @@ export class KubernetesClusterReader implements ClusterReader {
       }
       return health;
     } catch (error) {
-      if (error instanceof k8s.HttpError && (error.statusCode === 403 || error.statusCode === 404)) {
+      const status = httpStatusCodeOf(error);
+      if (status === 403 || status === 404) {
         return null;
       }
       throw error;
@@ -138,22 +147,22 @@ export class KubernetesClusterReader implements ClusterReader {
 
   async listPods(): Promise<RawPod[]> {
     const response = await this.coreApi.listPodForAllNamespaces();
-    return response.items as RawPod[];
+    return response.items as unknown as RawPod[];
   }
 
   async listServices(): Promise<RawService[]> {
     const response = await this.coreApi.listServiceForAllNamespaces();
-    return response.items as RawService[];
+    return response.items as unknown as RawService[];
   }
 
   async listPersistentVolumeClaims(): Promise<RawPersistentVolumeClaim[]> {
     const response = await this.coreApi.listPersistentVolumeClaimForAllNamespaces();
-    return response.items as RawPersistentVolumeClaim[];
+    return response.items as unknown as RawPersistentVolumeClaim[];
   }
 
   async listEvents(): Promise<RawEvent[]> {
     const response = await this.eventsApi.listEventForAllNamespaces();
-    return response.items as RawEvent[];
+    return response.items as unknown as RawEvent[];
   }
 
   async listClaims(): Promise<SupportedList<RawSandboxClaim>> {
@@ -224,13 +233,45 @@ export class KubernetesClusterReader implements ClusterReader {
       throw new Error(`patchSandboxAnnotations ${namespace}/${name} failed: ${message}`, { cause: error });
     }
   }
+
+  async patchSandboxReplicas(namespace: string, name: string, replicas: number): Promise<void> {
+    await this.customObjectsApi.patchNamespacedCustomObject(
+      {
+        group: "agents.x-k8s.io",
+        version: "v1alpha1",
+        namespace,
+        plural: "sandboxes",
+        name,
+        body: { spec: { replicas } },
+      },
+      k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch),
+    );
+  }
+
+  async patchClaimLifecycle(
+    namespace: string,
+    name: string,
+    lifecycle: { shutdownTime?: string },
+  ): Promise<void> {
+    await this.customObjectsApi.patchNamespacedCustomObject(
+      {
+        group: "extensions.agents.x-k8s.io",
+        version: "v1alpha1",
+        namespace,
+        plural: "sandboxclaims",
+        name,
+        body: { spec: { lifecycle } },
+      },
+      k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch),
+    );
+  }
 }
 
 export class KubernetesInventoryProvider implements InventoryProvider {
   private readonly cacheTtlMs: number;
   private readonly reader: ClusterReader;
-  private cache?: { expiresAt: number; snapshot: InventorySnapshot };
-  private inflight?: Promise<InventorySnapshot>;
+  private cache: { expiresAt: number; snapshot: InventorySnapshot } | undefined;
+  private inflight: Promise<InventorySnapshot> | undefined;
 
   constructor(reader: ClusterReader, options?: { cacheTtlMs?: number }) {
     this.reader = reader;
@@ -315,6 +356,26 @@ export class KubernetesInventoryProvider implements InventoryProvider {
     await this.reader.patchSandboxAnnotations(namespace, name, {
       "agents.x-k8s.io/reconcile-trigger": new Date().toISOString(),
     });
+    this.invalidate();
+  }
+
+  async setSandboxReplicas(namespace: string, name: string, replicas: number): Promise<void> {
+    if (!this.reader.patchSandboxReplicas) {
+      throw new Error("patchSandboxReplicas not supported by this reader");
+    }
+    await this.reader.patchSandboxReplicas(namespace, name, replicas);
+    this.invalidate();
+  }
+
+  async patchClaimLifecycle(
+    namespace: string,
+    name: string,
+    lifecycle: { shutdownTime?: string },
+  ): Promise<void> {
+    if (!this.reader.patchClaimLifecycle) {
+      throw new Error("patchClaimLifecycle not supported by this reader");
+    }
+    await this.reader.patchClaimLifecycle(namespace, name, lifecycle);
     this.invalidate();
   }
 }

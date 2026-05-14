@@ -1,11 +1,13 @@
-import { groupProblems, type ProblemGroup, type ProblemView } from "@agent-sandbox/dashboard-shared";
+import { groupProblems, type ProblemDag, type ProblemGroup, type ProblemView } from "@agent-sandbox/dashboard-shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
+import { CauseTree } from "@/components/CauseTree";
 import { useFilters } from "@/lib/filters";
 import { useExpandable } from "@/lib/useExpandable";
+import { ackProblem, clearAck, listAcks } from "@/lib/saved-views";
 import { matchesSearch } from "@/lib/utils";
 import { ActionButton } from "@/components/ActionButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,9 +19,24 @@ const SEVERITY_DOT: Record<ProblemView["severity"], string> = {
   info: "bg-sky-500",
 };
 
-export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
+export function ProblemsPanel({
+  problems,
+  dag,
+}: {
+  problems: ProblemView[];
+  dag?: ProblemDag | null;
+}) {
   const filters = useFilters();
   const expandable = useExpandable();
+  const [acks, setAcks] = useState<Set<string>>(() => new Set(listAcks().map((entry) => entry.kind)));
+
+  // Periodically expire stale acks so the panel stays accurate without a reload.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setAcks(new Set(listAcks().map((entry) => entry.kind)));
+    }, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const filtered = useMemo(
     () =>
@@ -31,6 +48,16 @@ export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
     [problems, filters.search, filters.namespace],
   );
   const groups = useMemo(() => groupProblems(filtered), [filtered]);
+  const useDag = dag && dag.roots.length > 0;
+
+  function toggleAck(kind: string) {
+    if (acks.has(kind)) {
+      clearAck(kind);
+    } else {
+      ackProblem(kind);
+    }
+    setAcks(new Set(listAcks().map((entry) => entry.kind)));
+  }
 
   return (
     <Card aria-label="Problems" role="region">
@@ -43,7 +70,9 @@ export function ProblemsPanel({ problems }: { problems: ProblemView[] }) {
         </span>
       </CardHeader>
       <CardContent className="space-y-1 p-3 pt-0" aria-live="polite">
-        {groups.length === 0 ? (
+        {useDag ? (
+          <CauseTree dag={dag} acks={acks} onAck={(kind) => toggleAck(kind)} />
+        ) : groups.length === 0 ? (
           <p className="text-xs text-muted-foreground">No matching problems.</p>
         ) : (
           groups.map((group) => (
