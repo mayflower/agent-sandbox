@@ -129,8 +129,18 @@ export class KubernetesClusterReader implements ClusterReader {
       return health;
     } catch (error) {
       const status = httpStatusCodeOf(error);
-      if (status === 403 || status === 404) {
+      if (status === 404) {
         return null;
+      }
+      if (status === 403) {
+        // RBAC denied — surface as a degraded health rather than "absent" so
+        // the operator can see that the dashboard's SA is missing permissions.
+        return {
+          available: false,
+          ready: 0,
+          desired: 0,
+          reason: "controller health forbidden (RBAC)",
+        };
       }
       throw error;
     }

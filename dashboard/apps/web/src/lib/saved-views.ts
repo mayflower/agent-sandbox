@@ -6,8 +6,10 @@ export interface SavedView {
   state: UrlState;
 }
 
-const STORAGE_KEY = "agent-sandbox-dashboard.saved-views";
-const ACK_KEY = "agent-sandbox-dashboard.problem-acks";
+// Namespace by origin so two tabs pointing at different backends don't collide.
+const ORIGIN_SUFFIX = typeof window !== "undefined" ? `:${window.location.origin}` : "";
+const STORAGE_KEY = `agent-sandbox-dashboard.saved-views${ORIGIN_SUFFIX}`;
+const ACK_KEY = `agent-sandbox-dashboard.problem-acks${ORIGIN_SUFFIX}`;
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -19,12 +21,16 @@ function readJson<T>(key: string, fallback: T): T {
   }
 }
 
-function writeJson<T>(key: string, value: T): void {
+function writeJson<T>(key: string, value: T): boolean {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Quota exceeded or storage unavailable — silently ignore so the UI
-    // continues to function. The user can still set the state again.
+    return true;
+  } catch (error) {
+    // Quota exceeded or storage unavailable. Return false so callers can
+    // surface a toast; UI continues to function in either case.
+    // eslint-disable-next-line no-console
+    console.warn(`[saved-views] write ${key} failed: ${(error as Error).message}`);
+    return false;
   }
 }
 
@@ -72,7 +78,7 @@ export function clearAck(kind: string): ProblemAck[] {
   return next;
 }
 
-export const DENSITY_KEY = "agent-sandbox-dashboard.density";
+export const DENSITY_KEY = `agent-sandbox-dashboard.density${ORIGIN_SUFFIX}`;
 export type Density = "compact" | "comfortable" | "card";
 
 export function loadDensity(): Density {

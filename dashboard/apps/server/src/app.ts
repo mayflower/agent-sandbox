@@ -6,6 +6,7 @@ import {
   diffSnapshots,
   captureSnapshot,
   buildProblemDag,
+  filterSnapshotForIdentity,
   mapEvents,
   normalizeClaims,
   normalizeSandboxes,
@@ -23,13 +24,14 @@ import { existsSync } from "node:fs";
 
 import { HistoryStore } from "./history/history-store.js";
 import { registerHistoryRoutes } from "./history/routes.js";
+import type { CostConfigStatus } from "./cost/config.js";
+import type { PollLoopHealth } from "./history/poll-loop.js";
 import { TimelineStore } from "./timeline/timeline-store.js";
 import { registerTimelineRoutes } from "./timeline/routes.js";
 import { registerCostRoutes } from "./cost/routes.js";
 import { registerActionRoutes } from "./actions/routes.js";
 import { registerBehaviorRoutes } from "./behavior/routes.js";
 import { attachIdentity } from "./identity/middleware.js";
-import { filterSnapshotForIdentity } from "./identity/filter-snapshot.js";
 
 export interface BuildAppOptions {
   provider: InventoryProvider;
@@ -37,6 +39,8 @@ export interface BuildAppOptions {
   historyStore?: HistoryStore;
   timelineStore?: TimelineStore;
   getCostRates?(): CostRates | null;
+  getCostStatus?(): CostConfigStatus | null;
+  getPollHealth?(): PollLoopHealth | null;
   getPodMetrics?(): PodMetric[];
   tenancyConfig?: TenancyConfig;
 }
@@ -70,13 +74,18 @@ export function buildApp(options: BuildAppOptions) {
           provider: options.provider,
         });
       } catch (error) {
-        // Identity resolution must never block the request — fall back to a
-        // synthetic operator identity so the rest of the API keeps working.
-        request.identity = { user: "operator", role: "operator", namespaces: [], groups: [] };
+        // Fail closed: never silently downgrade to operator on identity
+        // resolution failure — that would be a cross-tenant data leak.
+        // 503 keeps the client honest; the proxy or retry loop handles it.
+        const detail = error instanceof Error ? error.message : String(error);
+        // eslint-disable-next-line no-console
+        console.error(`[identity] resolution failed for ${request.url}: ${detail}`);
+        return reply.code(503).send({ message: "Identity resolution failed; retry shortly." });
       }
     });
   } else {
     app.addHook("onRequest", async (request) => {
+      // Tenancy disabled: the dashboard runs in single-tenant operator mode.
       request.identity = { user: "operator", role: "operator", namespaces: [], groups: [] };
     });
   }
@@ -86,7 +95,18 @@ export function buildApp(options: BuildAppOptions) {
     return filterSnapshotForIdentity(snapshot, identity);
   }
 
-  app.get("/healthz", async () => ({ ok: true }));
+  app.get("/healthz", async () => {
+    const pollHealth = options.getPollHealth?.() ?? null;
+    const costStatus = options.getCostStatus?.() ?? null;
+    return {
+      ok: true,
+      poll: pollHealth,
+      cost: costStatus,
+      history: historyStore.persistenceState(),
+    };
+  });
+
+  app.get("/api/cost/status", async () => options.getCostStatus?.() ?? null);
 
   app.get("/api/capabilities", async () => options.provider.getCapabilities());
 
@@ -135,11 +155,15 @@ export function buildApp(options: BuildAppOptions) {
     return buildProblemDag(classifyProblems(snapshot));
   });
 
+  async function scopedSnapshotFor(request: { identity: Identity }) {
+    return scopedSnapshot(request.identity);
+  }
+
   registerHistoryRoutes(app, historyStore);
   registerTimelineRoutes(app, timelineStore);
-  registerCostRoutes(app, { provider: options.provider, getRates: getCostRates });
+  registerCostRoutes(app, { scopedSnapshot: scopedSnapshotFor, getRates: getCostRates });
   registerActionRoutes(app, { provider: options.provider });
-  registerBehaviorRoutes(app, { provider: options.provider, getPodMetrics });
+  registerBehaviorRoutes(app, { scopedSnapshot: scopedSnapshotFor, getPodMetrics });
 
   app.get<{ Querystring: { from?: string; to?: string } }>(
     "/api/history/diff",
@@ -157,9 +181,13 @@ export function buildApp(options: BuildAppOptions) {
       if (!fromSnapshot || !toSnapshot) {
         return reply.code(404).send({ message: "snapshot pair not in history" });
       }
+      // Scope both sides to the caller's namespaces so a tenant cannot diff
+      // resources from another tenant by replaying old timestamps.
+      const fromScoped = filterSnapshotForIdentity(fromSnapshot, request.identity);
+      const toScoped = filterSnapshotForIdentity(toSnapshot, request.identity);
       return diffSnapshots(
-        captureSnapshot(fromSnapshot, new Date(fromTime).toISOString()),
-        captureSnapshot(toSnapshot, new Date(toTime).toISOString()),
+        captureSnapshot(fromScoped, new Date(fromTime).toISOString()),
+        captureSnapshot(toScoped, new Date(toTime).toISOString()),
       );
     },
   );

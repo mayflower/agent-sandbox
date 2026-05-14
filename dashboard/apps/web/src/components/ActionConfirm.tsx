@@ -26,10 +26,12 @@ export function ActionConfirm({
   const [phase, setPhase] = useState<"idle" | "armed" | "running">("idle");
   const [remaining, setRemaining] = useState(0);
   const fireRef = useRef<number | null>(null);
+  const tickRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
       if (fireRef.current !== null) window.clearTimeout(fireRef.current);
+      if (tickRef.current !== null) window.clearInterval(tickRef.current);
     };
   }, []);
 
@@ -41,14 +43,20 @@ export function ActionConfirm({
     setPhase("armed");
     setRemaining(undoWindowMs);
     const start = Date.now();
-    const tick = window.setInterval(() => {
+    tickRef.current = window.setInterval(() => {
       const elapsed = Date.now() - start;
       const left = Math.max(0, undoWindowMs - elapsed);
       setRemaining(left);
-      if (left === 0) window.clearInterval(tick);
+      if (left === 0 && tickRef.current !== null) {
+        window.clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
     }, 250);
     fireRef.current = window.setTimeout(() => {
-      window.clearInterval(tick);
+      if (tickRef.current !== null) {
+        window.clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
       void run();
     }, undoWindowMs);
   }
@@ -65,6 +73,8 @@ export function ActionConfirm({
   function cancel() {
     if (fireRef.current !== null) window.clearTimeout(fireRef.current);
     fireRef.current = null;
+    if (tickRef.current !== null) window.clearInterval(tickRef.current);
+    tickRef.current = null;
     setPhase("idle");
   }
 

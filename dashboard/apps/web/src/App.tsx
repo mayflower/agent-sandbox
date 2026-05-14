@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/sidebar";
 import { api } from "@/lib/api";
 import { FilterProvider, useFilters } from "@/lib/filters";
+import { NowProvider } from "@/lib/now";
 import { useTheme } from "@/lib/useTheme";
 import { matchesSearch } from "@/lib/utils";
 
@@ -65,9 +66,11 @@ const NAV_LABEL: Record<View, string> = {
 
 export default function App() {
   return (
-    <FilterProvider>
-      <AppContent />
-    </FilterProvider>
+    <NowProvider>
+      <FilterProvider>
+        <AppContent />
+      </FilterProvider>
+    </NowProvider>
   );
 }
 

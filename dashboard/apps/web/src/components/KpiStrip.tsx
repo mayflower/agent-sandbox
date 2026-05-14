@@ -8,7 +8,7 @@ import { useFilters } from "@/lib/filters";
 export interface KpiDescriptor {
   id: string;
   label: string;
-  /** Function pulling the value out of a metrics row. */
+  /** Key on SnapshotMetricsRow whose value drives the KPI. */
   metric: MetricKey;
   formatter?: (value: number) => string;
   tooltip?: string;

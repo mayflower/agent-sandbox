@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildProblemDag, type ProblemView } from "@agent-sandbox/dashboard-shared";
+import { buildProblemDag, type ProblemId, type ProblemView } from "@agent-sandbox/dashboard-shared";
+
+function id(value: string): ProblemId {
+  return value as ProblemId;
+}
 
 function problem(kind: ProblemView["kind"], namespace = "demo", name = "x"): ProblemView {
   return {
@@ -25,7 +29,7 @@ describe("buildProblemDag", () => {
       problem("runtime-missing", "demo", "sandbox-1"),
     ]);
     expect(dag.roots).toEqual(["unresolved-template-link:demo"]);
-    expect(dag.byId["runtime-missing:demo"]?.parentId).toBe("unresolved-template-link:demo");
+    expect(dag.byId[id("runtime-missing:demo")]?.parentId).toBe("unresolved-template-link:demo");
   });
 
   it("keeps unrelated problems as separate roots", () => {
@@ -45,7 +49,7 @@ describe("buildProblemDag", () => {
       problem("runtime-missing", "demo", "sb-2"),
     ]);
     expect(dag.roots).toEqual(["runtime-missing:demo"]);
-    expect(dag.byId["runtime-missing:demo"]!.affectedResources).toHaveLength(2);
+    expect(dag.byId[id("runtime-missing:demo")]!.affectedResources).toHaveLength(2);
   });
 
   it("does not produce cycles", () => {

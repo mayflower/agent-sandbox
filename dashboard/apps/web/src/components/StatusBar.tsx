@@ -5,7 +5,6 @@ import {
   RefreshCw,
   Sun,
 } from "lucide-react";
-import { useEffect, useState } from "react";
 import type { ControllerHealth } from "@agent-sandbox/dashboard-shared";
 
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { useFilters } from "@/lib/filters";
+import { useNow } from "@/lib/now";
 import { cn } from "@/lib/utils";
 
 export interface StatusBarProps {
@@ -56,11 +56,7 @@ export function StatusBar({
   totalCount,
 }: StatusBarProps) {
   const filters = useFilters();
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
+  const nowMs = useNow();
 
   const crisis = errorCount >= CRISIS_THRESHOLD;
 

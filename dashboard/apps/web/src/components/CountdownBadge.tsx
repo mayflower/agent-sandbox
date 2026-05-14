@@ -1,13 +1,8 @@
-import { useEffect, useState } from "react";
-
 import { Badge } from "@/components/ui/badge";
+import { useNow } from "@/lib/now";
 
 export function CountdownBadge({ until }: { until: string | undefined }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNow();
 
   if (!until) return <Badge tone="neutral">no shutdown</Badge>;
   const target = Date.parse(until);

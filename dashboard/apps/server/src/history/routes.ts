@@ -1,5 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { HistoryResolution } from "@agent-sandbox/dashboard-shared";
+import {
+  filterSnapshotForIdentity,
+  type HistoryResolution,
+} from "@agent-sandbox/dashboard-shared";
 import type { HistoryStore } from "./history-store.js";
 
 interface HistoryQuery {
@@ -9,6 +12,9 @@ interface HistoryQuery {
 }
 
 export function registerHistoryRoutes(app: FastifyInstance, store: HistoryStore) {
+  // Aggregate counters in /api/history/metrics are scalar-only and contain no
+  // per-namespace info, so operators and tenants see the same series. (The
+  // operator view of "active sandboxes" is still useful capacity context.)
   app.get<{ Querystring: HistoryQuery }>("/api/history/metrics", async (request, reply) => {
     const resolution = request.query.res === "5m" ? "5m" : "15s";
     const since = request.query.since ? Date.parse(request.query.since) : undefined;
@@ -31,6 +37,8 @@ export function registerHistoryRoutes(app: FastifyInstance, store: HistoryStore)
     if (!snapshot) {
       return reply.code(404).send({ message: "no snapshot within tolerance" });
     }
-    return snapshot;
+    // Scope to the caller's namespaces so a tenant cannot scrub into other
+    // tenants' historical state.
+    return filterSnapshotForIdentity(snapshot, request.identity);
   });
 }

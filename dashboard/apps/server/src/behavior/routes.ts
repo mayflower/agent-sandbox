@@ -1,14 +1,14 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   buildSandboxBehavior,
   normalizeAll,
-  type InventoryProvider,
+  type InventorySnapshot,
   type PodMetric,
 } from "@agent-sandbox/dashboard-shared";
 import { buildTemplateBehaviorFromSnapshot } from "./event-stats.js";
 
 export interface BehaviorRoutesDeps {
-  provider: InventoryProvider;
+  scopedSnapshot(request: FastifyRequest): Promise<InventorySnapshot>;
   /** Source of fresh per-pod usage metrics. Empty list disables anomaly detection. */
   getPodMetrics(): PodMetric[];
 }
@@ -18,7 +18,7 @@ export function registerBehaviorRoutes(app: FastifyInstance, deps: BehaviorRoute
     "/api/behavior/sandbox/:namespace/:name",
     async (request, reply) => {
       const { namespace, name } = request.params;
-      const snapshot = await deps.provider.getSnapshot();
+      const snapshot = await deps.scopedSnapshot(request);
       const inventory = normalizeAll(snapshot);
       const sandbox = inventory.sandboxes.find(
         (entry) => entry.namespace === namespace && entry.name === name,
@@ -53,7 +53,7 @@ export function registerBehaviorRoutes(app: FastifyInstance, deps: BehaviorRoute
   );
 
   app.get<{ Params: { name: string } }>("/api/behavior/template/:name", async (request) => {
-    const snapshot = await deps.provider.getSnapshot();
+    const snapshot = await deps.scopedSnapshot(request);
     return buildTemplateBehaviorFromSnapshot(snapshot, request.params.name);
   });
 }

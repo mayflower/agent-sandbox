@@ -446,7 +446,7 @@ export interface SnapshotMetricsRow {
   idleSpendPerHourUsd: number;
 }
 
-export const METRIC_KEYS: ReadonlyArray<keyof Omit<SnapshotMetricsRow, "timestampMs">> = [
+export const METRIC_KEYS = [
   "totalSandboxes",
   "activeSandboxes",
   "runtimeReadySandboxes",
@@ -471,6 +471,13 @@ export const METRIC_KEYS: ReadonlyArray<keyof Omit<SnapshotMetricsRow, "timestam
 
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
+// Compile-time exhaustiveness check: if a key is added to SnapshotMetricsRow
+// without being mirrored into METRIC_KEYS, this assignment fails to compile.
+type _MetricKeysExhaustive =
+  Exclude<keyof Omit<SnapshotMetricsRow, "timestampMs">, MetricKey> extends never ? true : never;
+const _metricKeysExhaustive: _MetricKeysExhaustive = true;
+void _metricKeysExhaustive;
+
 export interface HistorySeries {
   resolution: HistoryResolution;
   rows: SnapshotMetricsRow[];
@@ -480,12 +487,15 @@ export interface HistorySeries {
 // Foundation D: Causality Resolver (M2)
 // ----------------------------------------------------------------------------
 
+/** Branded id for a problem aggregate so it cannot be mixed with arbitrary strings. */
+export type ProblemId = string & { readonly __brand: "ProblemId" };
+
 export interface ProblemNode {
-  id: string;
+  id: ProblemId;
   kind: ProblemKind;
   severity: "info" | "warning" | "error";
   summary: string;
-  parentId?: string;
+  parentId?: ProblemId;
   affectedResources: Array<{
     namespace: string;
     resourceKind: SandboxResourceKind;
@@ -495,9 +505,9 @@ export interface ProblemNode {
 
 export interface ProblemDag {
   /** Root ids — likely root causes, no parent. */
-  roots: string[];
+  roots: ProblemId[];
   /** All nodes indexed by id. */
-  byId: Record<string, ProblemNode>;
+  byId: Record<ProblemId, ProblemNode>;
 }
 
 export interface ProblemDoc {
@@ -534,7 +544,7 @@ export interface TimelineEvent {
   reason: string;
   /** Operator-facing message. */
   message: string;
-  /** "Normal", "Warning". */
+  /** Normalised severity. K8s `Normal` -> "info", `Warning` -> "warning"; "error" is reserved for synthesised transitions. */
   severity: "info" | "warning" | "error";
   /** Optional structured detail, free-form JSON. */
   detail?: Record<string, unknown>;
@@ -600,8 +610,10 @@ export interface CostRow {
   instanceCount: number;
 }
 
+export type CostGroupBy = "template" | "namespace" | `label:${string}`;
+
 export interface CostByDimension {
-  groupBy: "template" | "namespace" | string; // string == "label:<key>"
+  groupBy: CostGroupBy;
   rows: CostRow[];
 }
 
@@ -609,20 +621,15 @@ export interface CostByDimension {
 // M5: Identity + Self-Service Actions
 // ----------------------------------------------------------------------------
 
-export interface Identity {
+interface IdentityBase {
   user: string;
-  role: "operator" | "tenant";
-  /** Namespaces visible to this user. Empty array means operator/all. */
-  namespaces: string[];
   groups: string[];
 }
 
-export interface ActionEnvelope<T extends string> {
-  kind: SandboxResourceKind;
-  namespace: string;
-  name: string;
-  action: T;
-}
+/** A scoped identity. `operator` sees every namespace; `tenant` is restricted to the listed ones. */
+export type Identity =
+  | (IdentityBase & { role: "operator"; namespaces: readonly [] })
+  | (IdentityBase & { role: "tenant"; namespaces: string[] });
 
 // ----------------------------------------------------------------------------
 // M6: Diff
