@@ -290,6 +290,11 @@ function AppContent() {
           else if (next === "story") filters.setView("story");
           else filters.setView("operator");
         }}
+        onHome={() => {
+          filters.reset();
+          filters.setView("operator");
+          setView("overview");
+        }}
         capabilities={capabilitiesQuery.data!}
         costAvailable={costAvailable}
         showTenant={identityQuery.data?.role === "tenant" || (identityQuery.data?.namespaces.length ?? 0) > 0}
@@ -369,12 +374,14 @@ function AppContent() {
 function AppSidebar({
   view,
   onViewChange,
+  onHome,
   capabilities,
   costAvailable,
   showTenant,
 }: {
   view: View;
   onViewChange: (view: View) => void;
+  onHome: () => void;
   capabilities: { claims: boolean; warmPools: boolean; templates: boolean; events: boolean };
   costAvailable: boolean;
   showTenant: boolean;
@@ -389,12 +396,22 @@ function AppSidebar({
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="px-3 py-2">
-        <div className="flex items-center gap-2">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground">
+        <a
+          href="/"
+          onClick={(event) => {
+            // Soft navigation: stay in the SPA, reset filters + view.
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+            event.preventDefault();
+            onHome();
+          }}
+          className="flex items-center gap-2 rounded-md outline-none hover:opacity-90 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          aria-label="Back to overview"
+        >
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground">
             <LayoutDashboard className="h-3.5 w-3.5" />
-          </div>
+          </span>
           <span className="truncate text-sm font-semibold">agent-sandbox</span>
-        </div>
+        </a>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
