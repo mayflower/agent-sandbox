@@ -46,3 +46,4 @@ hermes-sandbox-knowledge.md
 **/test-results/
 **/playwright-report/
 **/.turbo/
+**/.dashboard-history/
