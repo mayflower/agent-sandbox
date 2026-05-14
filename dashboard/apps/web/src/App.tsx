@@ -388,7 +388,7 @@ function AppSidebar({
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b border-sidebar-border px-3 py-2">
+      <SidebarHeader className="px-3 py-2">
         <div className="flex items-center gap-2">
           <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground">
             <LayoutDashboard className="h-3.5 w-3.5" />

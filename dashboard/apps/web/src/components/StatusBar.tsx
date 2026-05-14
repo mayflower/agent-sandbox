@@ -63,8 +63,8 @@ export function StatusBar({
   return (
     <header
       className={cn(
-        "sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 bg-background/80 px-3 shadow-[0_1px_0_0_hsl(220_30%_85%/0.6)] backdrop-blur dark:shadow-[0_1px_0_0_hsl(222_40%_18%/0.6)] md:px-4",
-        crisis && "shadow-[inset_0_0_0_1px_rgba(244,63,94,0.4),0_1px_0_0_rgba(244,63,94,0.4)]",
+        "sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 bg-background/80 px-3 backdrop-blur md:px-4",
+        crisis && "shadow-[inset_0_0_0_1px_rgba(244,63,94,0.4)]",
       )}
     >
       <div className="flex items-center gap-2">

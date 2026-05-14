@@ -20,15 +20,7 @@ const TableHeader = React.forwardRef<
   HTMLTableSectionElement,
   React.HTMLAttributes<HTMLTableSectionElement>
 >(({ className, ...props }, ref) => (
-  // Header gets a soft underline shadow rather than a hard border.
-  <thead
-    ref={ref}
-    className={cn(
-      "[&_tr]:shadow-[0_1px_0_0_hsl(220_30%_85%/0.6)] dark:[&_tr]:shadow-[0_1px_0_0_hsl(222_40%_18%/0.6)]",
-      className,
-    )}
-    {...props}
-  />
+  <thead ref={ref} className={cn(className)} {...props} />
 ))
 TableHeader.displayName = "TableHeader"
 
