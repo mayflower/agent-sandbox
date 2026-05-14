@@ -57,9 +57,14 @@ export interface KpiStripProps {
   series: HistorySeries | null | undefined;
   /** Override the default KPI list. */
   kpis?: KpiDescriptor[];
+  /** Override the displayed "current" value per metric. Used when a filter
+   *  scopes the view to a subset of resources — the history ring stores
+   *  aggregate cluster counts only, so we recompute the current value from
+   *  the filtered live data. The sparkline still tracks the cluster trend. */
+  currentOverride?: Partial<Record<MetricKey, number>>;
 }
 
-export function KpiStrip({ series, kpis = DEFAULT_KPIS }: KpiStripProps) {
+export function KpiStrip({ series, kpis = DEFAULT_KPIS, currentOverride }: KpiStripProps) {
   const filters = useFilters();
   const latest = series?.rows.at(-1);
 
@@ -75,7 +80,10 @@ export function KpiStrip({ series, kpis = DEFAULT_KPIS }: KpiStripProps) {
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
       {kpis.map((kpi) => {
-        const current = latest ? (Number(latest[kpi.metric]) || 0) : 0;
+        const override = currentOverride?.[kpi.metric];
+        const current = override !== undefined
+          ? override
+          : latest ? (Number(latest[kpi.metric]) || 0) : 0;
         const formatter = kpi.formatter ?? formatInt;
         return (
           <Card
