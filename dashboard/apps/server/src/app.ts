@@ -66,7 +66,7 @@ export function buildApp(options: BuildAppOptions) {
     });
   }
 
-  if (options.tenancyConfig) {
+  if (options.tenancyConfig?.enabled) {
     app.addHook("onRequest", async (request, reply) => {
       try {
         await attachIdentity(request, reply, {
@@ -86,6 +86,8 @@ export function buildApp(options: BuildAppOptions) {
   } else {
     app.addHook("onRequest", async (request) => {
       // Tenancy disabled: the dashboard runs in single-tenant operator mode.
+      // We don't call the provider here so per-request work stays cheap and
+      // a transient apiserver hiccup can't 503 every endpoint.
       request.identity = { user: "operator", role: "operator", namespaces: [], groups: [] };
     });
   }
