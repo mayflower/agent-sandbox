@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 import { DEFAULT_COST_RATES, type CostRates } from "@agent-sandbox/dashboard-shared";
 
 interface RawCostFile {
@@ -11,75 +12,6 @@ interface RawCostFile {
     cpu_per_core_hour_usd?: number;
     memory_per_gib_hour_usd?: number;
   }>;
-}
-
-/** Minimal yaml subset parser — flat scalars + nested arrays/maps with two-
- *  space indentation. Sufficient for cost.yaml's shape and avoids adding a
- *  yaml dependency. Rejects anything more complex. */
-function parseFlatYaml(text: string): RawCostFile {
-  const lines = text.split(/\r?\n/);
-  const root: Record<string, unknown> = {};
-  type Frame = { obj: Record<string, unknown> | unknown[]; indent: number };
-  const stack: Frame[] = [{ obj: root, indent: -1 }];
-
-  function parseScalar(value: string): unknown {
-    const trimmed = value.trim();
-    if (trimmed === "" || trimmed === "null") return null;
-    if (trimmed === "true") return true;
-    if (trimmed === "false") return false;
-    if (/^[-+]?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
-    return trimmed.replace(/^"|"$/g, "");
-  }
-
-  function indentOf(line: string): number {
-    return line.match(/^ */)?.[0].length ?? 0;
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/#.*$/, "").trimEnd();
-    if (!line.trim()) continue;
-    const indent = indentOf(line);
-    while (stack.length > 1 && indent <= stack.at(-1)!.indent) stack.pop();
-    const parent = stack.at(-1)!.obj;
-    const content = line.slice(indent);
-
-    if (content.startsWith("- ")) {
-      if (!Array.isArray(parent)) throw new Error(`unexpected list at line: ${rawLine}`);
-      const after = content.slice(2);
-      if (after.includes(":")) {
-        const child: Record<string, unknown> = {};
-        parent.push(child);
-        const [key, ...rest] = after.split(":");
-        const value = rest.join(":").trim();
-        if (value === "") {
-          stack.push({ obj: child, indent });
-        } else {
-          child[key!.trim()] = parseScalar(value);
-        }
-      } else {
-        parent.push(parseScalar(after));
-      }
-      continue;
-    }
-
-    const colonIdx = content.indexOf(":");
-    if (colonIdx === -1) continue;
-    const key = content.slice(0, colonIdx).trim();
-    const value = content.slice(colonIdx + 1).trim();
-    if (!Array.isArray(parent)) {
-      if (value === "") {
-        // Peek next non-blank line to decide map vs list
-        const next = lines.slice(lines.indexOf(rawLine) + 1).find((peek) => peek.trim());
-        const child: Record<string, unknown> | unknown[] = next && next.trimStart().startsWith("- ") ? [] : {};
-        parent[key] = child;
-        stack.push({ obj: child, indent });
-      } else {
-        parent[key] = parseScalar(value);
-      }
-    }
-  }
-
-  return root as RawCostFile;
 }
 
 function toRates(raw: RawCostFile): CostRates {
@@ -102,8 +34,21 @@ function toRates(raw: RawCostFile): CostRates {
   };
 }
 
+export type CostConfigStatusCode = "ok" | "missing" | "parse-error" | "io-error";
+
+export interface CostConfigStatus {
+  code: CostConfigStatusCode;
+  /** Path the loader is watching. */
+  path: string;
+  /** Operator-facing error description when code !== "ok"/"missing". */
+  detail?: string;
+  /** ISO timestamp of the last status transition. */
+  changedAt: string;
+}
+
 export interface CostConfigLoader {
   current(): CostRates | null;
+  status(): CostConfigStatus;
   start(): void;
   stop(): void;
   configPath(): string;
@@ -112,27 +57,59 @@ export interface CostConfigLoader {
 
 export function createCostConfigLoader(configPath: string): CostConfigLoader {
   const absolute = path.resolve(configPath);
+  // `current` holds the most recent successfully-parsed rates. Parse failures
+  // do NOT clobber it — operators expect cost to keep working while they
+  // fix a typo.
   let current: CostRates | null = null;
   let watcher: FSWatcher | null = null;
+  let lastStatus: CostConfigStatus = {
+    code: "missing",
+    path: absolute,
+    changedAt: new Date().toISOString(),
+  };
   const listeners = new Set<(rates: CostRates | null) => void>();
+
+  function updateStatus(code: CostConfigStatusCode, detail?: string): void {
+    if (lastStatus.code === code && lastStatus.detail === detail) return;
+    lastStatus = {
+      code,
+      path: absolute,
+      changedAt: new Date().toISOString(),
+      ...(detail !== undefined ? { detail } : {}),
+    };
+  }
 
   function load(): void {
     if (!existsSync(absolute)) {
       current = null;
+      updateStatus("missing");
+      return;
+    }
+    let text: string;
+    try {
+      text = readFileSync(absolute, "utf8");
+    } catch (error) {
+      const detail = (error as Error).message;
+      // eslint-disable-next-line no-console
+      console.warn(`[cost] read ${absolute} failed: ${detail}`);
+      updateStatus("io-error", detail);
       return;
     }
     try {
-      const text = readFileSync(absolute, "utf8");
-      current = toRates(parseFlatYaml(text));
+      const parsed = parseYaml(text) as RawCostFile | null | undefined;
+      current = toRates(parsed ?? {});
+      updateStatus("ok");
     } catch (error) {
+      const detail = (error as Error).message;
       // eslint-disable-next-line no-console
-      console.warn(`[cost] failed to load ${absolute}: ${(error as Error).message}`);
-      current = null;
+      console.warn(`[cost] parse ${absolute} failed; keeping previous rates: ${detail}`);
+      updateStatus("parse-error", detail);
     }
   }
 
   return {
     current: () => current,
+    status: () => lastStatus,
     configPath: () => absolute,
     start: () => {
       load();
@@ -143,8 +120,12 @@ export function createCostConfigLoader(configPath: string): CostConfigLoader {
             for (const listener of listeners) listener(current);
           }
         });
-      } catch {
-        // Directory may not exist yet — config is optional.
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") {
+          // eslint-disable-next-line no-console
+          console.warn(`[cost] hot reload disabled (${code ?? "unknown"}): ${(error as Error).message}`);
+        }
       }
     },
     stop: () => {

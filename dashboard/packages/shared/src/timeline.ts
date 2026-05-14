@@ -8,11 +8,7 @@ export function compareEventsDesc(left: TimelineEvent, right: TimelineEvent): nu
   return Date.parse(right.at) - Date.parse(left.at);
 }
 
-/**
- * Deduplicate timeline events by id. The same logical event can arrive from
- * multiple sources (K8s events watch + snapshot diff), so we collapse on a
- * stable id. Keeps the first seen entry (sources push in priority order).
- */
+/** Dedupe by `id`, first occurrence wins (callers push in priority order). */
 export function dedupeEvents(events: Iterable<TimelineEvent>): TimelineEvent[] {
   const seen = new Map<string, TimelineEvent>();
   for (const event of events) {

@@ -24,7 +24,7 @@ describe("dashboard server app", () => {
     const capabilities = await app.inject({ method: "GET", url: "/api/capabilities" });
 
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toEqual({ ok: true });
+    expect(health.json().ok).toBe(true);
     expect(capabilities.json()).toEqual({
       sandboxes: true,
       claims: false,

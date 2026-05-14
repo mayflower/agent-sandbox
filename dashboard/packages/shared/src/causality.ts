@@ -1,10 +1,15 @@
 import type {
   ProblemDag,
+  ProblemId,
   ProblemKind,
   ProblemNode,
   ProblemView,
   SandboxResourceKind,
 } from "./types.js";
+
+function asProblemId(value: string): ProblemId {
+  return value as ProblemId;
+}
 
 interface CausalityRule {
   /** Apply when this kind is present in the problem list. */
@@ -74,18 +79,15 @@ function pickParent(child: ProblemView, problems: ProblemView[]): ProblemView | 
   return undefined;
 }
 
-/** Group problems by `kind` and produce a DAG where each node represents a
- *  problem class for a single namespace (the granularity operators care about).
- *  Identical kinds in the same namespace are merged into a single node whose
- *  `affectedResources[]` lists the affected names. */
+/** Aggregate problems by (kind, namespace) into a DAG of cause-effect nodes. */
 export function buildProblemDag(problems: ProblemView[]): ProblemDag {
   type Aggregate = {
     node: ProblemNode;
     members: ProblemView[];
   };
 
-  const aggregateKey = (problem: ProblemView): string => `${problem.kind}:${problem.namespace}`;
-  const aggregates = new Map<string, Aggregate>();
+  const aggregateKey = (problem: ProblemView): ProblemId => asProblemId(`${problem.kind}:${problem.namespace}`);
+  const aggregates = new Map<ProblemId, Aggregate>();
 
   for (const problem of problems) {
     const key = aggregateKey(problem);
@@ -107,7 +109,6 @@ export function buildProblemDag(problems: ProblemView[]): ProblemDag {
     });
   }
 
-  // Resolve parent links by looking at any member of each aggregate.
   for (const aggregate of aggregates.values()) {
     const sample = aggregate.members[0];
     if (!sample) continue;
@@ -122,8 +123,8 @@ export function buildProblemDag(problems: ProblemView[]): ProblemDag {
 
   // Break any accidental cycles defensively (rules above are acyclic by design).
   for (const aggregate of aggregates.values()) {
-    const visited = new Set<string>();
-    let cursor: string | undefined = aggregate.node.parentId;
+    const visited = new Set<ProblemId>();
+    let cursor: ProblemId | undefined = aggregate.node.parentId;
     while (cursor) {
       if (visited.has(cursor) || cursor === aggregate.node.id) {
         delete aggregate.node.parentId;
@@ -134,8 +135,8 @@ export function buildProblemDag(problems: ProblemView[]): ProblemDag {
     }
   }
 
-  const byId: Record<string, ProblemNode> = {};
-  const roots: string[] = [];
+  const byId = {} as Record<ProblemId, ProblemNode>;
+  const roots: ProblemId[] = [];
   for (const aggregate of aggregates.values()) {
     byId[aggregate.node.id] = aggregate.node;
     if (!aggregate.node.parentId) {
@@ -143,11 +144,11 @@ export function buildProblemDag(problems: ProblemView[]): ProblemDag {
     }
   }
 
-  // Stable root order: errors first, then warnings, then info, ties by count desc.
   const severityRank = { error: 0, warning: 1, info: 2 } as const;
   roots.sort((leftId, rightId) => {
-    const left = byId[leftId]!;
-    const right = byId[rightId]!;
+    const left = byId[leftId];
+    const right = byId[rightId];
+    if (!left || !right) return 0;
     const severityDelta = severityRank[left.severity] - severityRank[right.severity];
     if (severityDelta !== 0) return severityDelta;
     return right.affectedResources.length - left.affectedResources.length;

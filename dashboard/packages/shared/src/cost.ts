@@ -2,6 +2,7 @@ import { normalizeAll } from "./normalizers.js";
 import type {
   CostBreakdown,
   CostByDimension,
+  CostGroupBy,
   CostRates,
   CostRow,
   InventorySnapshot,
@@ -49,13 +50,14 @@ export function resolveRatesForLabels(
   return { cpu: rates.cpuPerCoreHourUsd, memory: rates.memoryPerGibHourUsd };
 }
 
-/** Pure cost arithmetic for a single workload's resource request times duration. */
 export function costForPod(input: PodCostInput, rates: CostRates): CostBreakdown {
   const resolved = resolveRatesForLabels(rates, input.nodeLabels);
   const cpuUsd = input.cpuCores * resolved.cpu * input.uptimeHours;
   const memoryUsd = input.memoryGib * resolved.memory * input.uptimeHours;
-  const storageMonths = input.uptimeHours / HOURS_PER_MONTH;
-  const storageUsd = input.storageGib * rates.storagePerGibMonthUsd * storageMonths;
+  // Storage is configured per GiB-month but we charge per uptime hour, so
+  // convert: cost = GiB × ($/GiB·month) × (hours / 720).
+  const storageHourFraction = input.uptimeHours / HOURS_PER_MONTH;
+  const storageUsd = input.storageGib * rates.storagePerGibMonthUsd * storageHourFraction;
   return {
     cpuUsd,
     memoryUsd,
@@ -113,6 +115,9 @@ function parseStorageGib(value: string | undefined): number {
   const match = value.match(STORAGE_RE);
   if (!match) return 0;
   const raw = Number(match[1]!);
+  // K8s convention: a bare number (no suffix) on a storage request is *bytes*.
+  // Memory uses the same regex but elsewhere we treat bare numbers as bytes
+  // too — see parseMemoryGib — so behaviour stays consistent.
   const bytes = raw * bytesFromUnit(match[2]);
   return bytes / 1024 ** 3;
 }
@@ -209,7 +214,7 @@ export function buildSnapshotCost(snapshot: InventorySnapshot, rates: CostRates,
 export function buildCostByDimension(
   snapshot: InventorySnapshot,
   rates: CostRates,
-  groupBy: "template" | "namespace" | string,
+  groupBy: CostGroupBy,
   now = new Date(),
 ): CostByDimension {
   const inventory = normalizeAll(snapshot, now);

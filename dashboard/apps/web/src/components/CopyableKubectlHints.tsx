@@ -34,7 +34,7 @@ export function CopyableKubectlHints({ resourceKind, namespace, resourceName }: 
 }
 
 function CopyLine({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <div className="flex items-center gap-2 rounded border bg-muted/30 p-1.5 text-[11px] font-mono">
       <code className="flex-1 truncate">{text}</code>
@@ -44,13 +44,27 @@ function CopyLine({ text }: { text: string }) {
         size="icon"
         className="h-5 w-5"
         onClick={() => {
-          void navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          navigator.clipboard.writeText(text).then(
+            () => {
+              setState("copied");
+              setTimeout(() => setState("idle"), 1500);
+            },
+            () => {
+              setState("failed");
+              setTimeout(() => setState("idle"), 2000);
+            },
+          );
         }}
         aria-label="Copy command"
+        title={state === "failed" ? "Copy failed — clipboard permission denied" : "Copy command"}
       >
-        {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        {state === "copied" ? (
+          <Check className="h-3 w-3" />
+        ) : state === "failed" ? (
+          <span className="text-[10px] text-rose-500">!</span>
+        ) : (
+          <Copy className="h-3 w-3" />
+        )}
       </Button>
     </div>
   );

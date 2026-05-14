@@ -1,4 +1,4 @@
-import { mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import path from "node:path";
 import {
   projectSnapshotToMetricsRow,
@@ -46,21 +46,16 @@ export interface SnapshotCapture {
 
 const PERSISTENCE_FILE = "history.ndjson";
 
-/**
- * Two-resolution ring buffer plus optional disk persistence.
- *
- * - `15s` resolution: last 60 min (240 rows)
- * - `5m` resolution: last 7 days (2016 rows)
- *
- * Full snapshots are also retained at the 15 s resolution to power the
- * time-scrubber diff (M6).
- */
+/** Two-resolution ring buffer (15 s / 60 min, 5 m / 7 d) plus optional ndjson persistence. */
 export class HistoryStore {
   private readonly fastMetrics: RingBufferState<SnapshotMetricsRow>;
   private readonly slowMetrics: RingBufferState<SnapshotMetricsRow>;
   private readonly fullSnapshots: RingBufferState<{ at: number; snapshot: InventorySnapshot }>;
   private lastSlowFlushAt = 0;
-  private readonly persistFile?: string;
+  private persistFile: string | undefined;
+  private persistFd: number | undefined;
+  /** Number of malformed lines seen during replay; logged once via {@link disablePersistence}. */
+  private replayMalformedCount = 0;
 
   constructor(private readonly options: HistoryStoreOptions = {}) {
     this.fastMetrics = createRing(FAST_BUFFER_CAPACITY);
@@ -73,20 +68,28 @@ export class HistoryStore {
         mkdirSync(dir, { recursive: true });
         this.persistFile = path.join(dir, PERSISTENCE_FILE);
         this.replayPersistence();
+        // Open a long-lived append fd; reused for every record() write below.
+        // Caller closes via close().
+        this.persistFd = openSync(this.persistFile, "a");
       } catch (error) {
         // eslint-disable-next-line no-console
         console.warn(`[history] disk persistence disabled: ${(error as Error).message}`);
+        this.persistFile = undefined;
       }
     }
   }
 
-  /** Replay the persisted ndjson rows on startup. */
   private replayPersistence(): void {
     if (!this.persistFile) return;
     let content: string;
     try {
       content = readFileSync(this.persistFile, "utf8");
-    } catch {
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        // eslint-disable-next-line no-console
+        console.warn(`[history] replay read failed (${code}): ${(error as Error).message}`);
+      }
       return;
     }
     for (const line of content.split("\n")) {
@@ -95,26 +98,65 @@ export class HistoryStore {
         const row = JSON.parse(line) as SnapshotMetricsRow;
         if (typeof row?.timestampMs === "number") {
           pushRing(this.fastMetrics, row);
+        } else {
+          this.replayMalformedCount += 1;
         }
       } catch {
-        // Malformed line — skip silently.
+        this.replayMalformedCount += 1;
       }
+    }
+    if (this.replayMalformedCount > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(`[history] dropped ${this.replayMalformedCount} malformed rows during replay of ${this.persistFile}`);
     }
     if (this.fastMetrics.values.length > 0) {
       this.lastSlowFlushAt = this.fastMetrics.values.at(-1)!.timestampMs;
     }
   }
 
-  /** Persist a row to ndjson. Errors are logged once and persistence disabled. */
-  private persistRow(row: SnapshotMetricsRow): void {
-    if (!this.persistFile) return;
-    try {
-      const fd = openSync(this.persistFile, "a");
-      writeSync(fd, JSON.stringify(row) + "\n");
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn(`[history] persistence write failed: ${(error as Error).message}`);
+  private disablePersistence(reason: string): void {
+    // Closing the fd avoids leaking it across the rest of process lifetime.
+    if (this.persistFd !== undefined) {
+      try {
+        closeSync(this.persistFd);
+      } catch {
+        /* best-effort */
+      }
+      this.persistFd = undefined;
     }
+    this.persistFile = undefined;
+    // eslint-disable-next-line no-console
+    console.warn(`[history] persistence disabled after first write failure: ${reason}`);
+  }
+
+  private persistRow(row: SnapshotMetricsRow): void {
+    if (this.persistFd === undefined) return;
+    try {
+      writeSync(this.persistFd, JSON.stringify(row) + "\n");
+    } catch (error) {
+      this.disablePersistence((error as Error).message);
+    }
+  }
+
+  /** Close the persistence fd. Idempotent. */
+  close(): void {
+    if (this.persistFd !== undefined) {
+      try {
+        closeSync(this.persistFd);
+      } catch {
+        /* best-effort */
+      }
+      this.persistFd = undefined;
+    }
+  }
+
+  /** Inspect persistence health for /api/healthz. */
+  persistenceState(): { active: boolean; replayMalformed: number; file: string | undefined } {
+    return {
+      active: this.persistFd !== undefined,
+      replayMalformed: this.replayMalformedCount,
+      ...(this.persistFile ? { file: this.persistFile } : { file: undefined }),
+    };
   }
 
   /**

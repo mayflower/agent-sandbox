@@ -35,21 +35,19 @@ export function CauseTree({ dag, acks, onAck }: CauseTreeProps) {
   return (
     <ul className="space-y-2">
       {dag.roots
-        .filter((id) => !acks?.has(dag.byId[id]!.kind))
-        .map((rootId) => {
-          const node = dag.byId[rootId];
-          if (!node) return null;
-          return (
-            <TreeNode
-              key={rootId}
-              node={node}
-              dag={dag}
-              depth={0}
-              acked={acks?.has(node.kind) ?? false}
-              {...(onAck ? { onAck } : {})}
-            />
-          );
-        })}
+        .map((rootId) => dag.byId[rootId])
+        .filter((node): node is NonNullable<typeof node> => node !== undefined)
+        .filter((node) => !acks?.has(node.kind))
+        .map((node) => (
+          <TreeNode
+            key={node.id}
+            node={node}
+            dag={dag}
+            depth={0}
+            acked={acks?.has(node.kind) ?? false}
+            {...(onAck ? { onAck } : {})}
+          />
+        ))}
     </ul>
   );
 }

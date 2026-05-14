@@ -103,8 +103,9 @@ export function FilterProvider({ children }: { children: ReactNode }) {
     setDrawer(null);
   }, []);
 
-  // Push state changes to the URL. We debounce per render frame so chains of
-  // setters within a single event handler produce a single replaceState.
+  // Push state changes to the URL. React batches state updates within an
+  // event handler, so this effect fires once per commit even when multiple
+  // setters are called.
   useEffect(() => {
     const state: UrlState = {
       view,
@@ -195,5 +196,5 @@ export function useFilters(): FilterState {
   return ctx;
 }
 
-/** Suppress popstate listener during tests so we can mount in jsdom. */
+/** Test-only re-export of DEFAULT_URL_STATE. */
 export const __INTERNAL = { DEFAULT_URL_STATE };

@@ -32,6 +32,12 @@ export function SavedViewsTabs() {
     filters.setSearch(state.search);
     filters.setBrokenOnly(state.brokenOnly);
     filters.setScrubAt(state.scrubAt);
+    filters.setTab(state.tab);
+    if (state.drawer) filters.openDrawer(state.drawer);
+    else filters.closeDrawer();
+    // Re-apply expanded problem set: clear then toggle each saved kind.
+    for (const kind of filters.expandedProblems) filters.toggleExpandedProblem(kind);
+    for (const kind of state.expandedProblems) filters.toggleExpandedProblem(kind);
   }
 
   function isActive(state: UrlState): boolean {

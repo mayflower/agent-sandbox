@@ -32,22 +32,24 @@ async function main() {
 
   const tenancyConfig = loadTenancyConfig(process.env);
 
+  const pollIntervalMs = Number(process.env.DASHBOARD_POLL_MS ?? "15000");
+  const pollHandle = startPollLoop({
+    provider,
+    historyStore,
+    timelineStore,
+    getCostRates: () => costLoader.current(),
+    intervalMs: pollIntervalMs,
+  });
+
   const app = buildApp({
     provider,
     staticDir: defaultStaticDir,
     historyStore,
     timelineStore,
     getCostRates: () => costLoader.current(),
+    getCostStatus: () => costLoader.status(),
+    getPollHealth: () => pollHandle.health(),
     tenancyConfig,
-  });
-
-  const pollIntervalMs = Number(process.env.DASHBOARD_POLL_MS ?? "15000");
-  startPollLoop({
-    provider,
-    historyStore,
-    timelineStore,
-    getCostRates: () => costLoader.current(),
-    intervalMs: pollIntervalMs,
   });
 
   const port = Number(process.env.PORT ?? "8080");
