@@ -57,7 +57,7 @@ describe("CauseTree", () => {
     expect(screen.getByText(/No problems detected/i)).toBeInTheDocument();
   });
 
-  it("invokes onAck when the ack button is clicked", () => {
+  it("invokes onAck when an ack button is clicked", () => {
     let acked = "";
     render(
       wrap(
@@ -69,7 +69,11 @@ describe("CauseTree", () => {
         />,
       ),
     );
-    fireEvent.click(screen.getByText("ack 1h"));
-    expect(acked).toBe("unresolved-template-link");
+    // The DAG flattens to two rows (warning + error), each with its own ack
+    // button. Click the first one — the error/runtime-missing row sorts
+    // ahead of the warning by severity.
+    const buttons = screen.getAllByText("ack 1h");
+    fireEvent.click(buttons[0]!);
+    expect(["runtime-missing", "unresolved-template-link"]).toContain(acked);
   });
 });

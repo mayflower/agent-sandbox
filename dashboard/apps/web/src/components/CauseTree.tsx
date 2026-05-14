@@ -1,6 +1,6 @@
 import type { ProblemDag, ProblemNode, SandboxResourceKind } from "@agent-sandbox/dashboard-shared";
 import { lookupProblemDoc } from "@agent-sandbox/dashboard-shared";
-import { ChevronDown, ChevronRight, AlertCircle, AlertTriangle, Info } from "lucide-react";
+import { ChevronDown, ChevronRight, AlertCircle, AlertTriangle, ArrowUpRight, Info } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { useFilters } from "@/lib/filters";
@@ -18,77 +18,78 @@ const SEVERITY_TONE = {
   info: "info",
 } as const;
 
+const SEVERITY_RANK = { error: 0, warning: 1, info: 2 } as const;
+
 export interface CauseTreeProps {
   dag: ProblemDag;
   acks?: Set<string>;
   onAck?(kind: string): void;
 }
 
-function childrenOf(dag: ProblemDag, parentId: string): ProblemNode[] {
-  return Object.values(dag.byId).filter((node) => node.parentId === parentId);
-}
-
 export function CauseTree({ dag, acks, onAck }: CauseTreeProps) {
-  if (dag.roots.length === 0) {
+  // Flatten the DAG to a single severity-sorted list. The cause/effect link
+  // is preserved as a tiny "via <parent>" caption inside the child row, so
+  // operators see every problem at one indent and don't have to chase
+  // through nested expansions.
+  const visible = Object.values(dag.byId)
+    .filter((node) => !acks?.has(node.kind))
+    .sort((a, b) => {
+      const sev = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
+      if (sev !== 0) return sev;
+      return b.affectedResources.length - a.affectedResources.length;
+    });
+
+  if (visible.length === 0) {
     return <p className="text-xs text-muted-foreground">No problems detected.</p>;
   }
+
   return (
     <ul className="divide-y divide-border/40">
-      {dag.roots
-        .map((rootId) => dag.byId[rootId])
-        .filter((node): node is NonNullable<typeof node> => node !== undefined)
-        .filter((node) => !acks?.has(node.kind))
-        .map((node) => (
-          <TreeNode
-            key={node.id}
-            node={node}
-            dag={dag}
-            depth={0}
-            acked={acks?.has(node.kind) ?? false}
-            {...(onAck ? { onAck } : {})}
-          />
-        ))}
+      {visible.map((node) => (
+        <ProblemRow
+          key={node.id}
+          node={node}
+          parent={node.parentId ? dag.byId[node.parentId] : undefined}
+          acked={acks?.has(node.kind) ?? false}
+          {...(onAck ? { onAck } : {})}
+        />
+      ))}
     </ul>
   );
 }
 
-function TreeNode({
+function ProblemRow({
   node,
-  dag,
-  depth,
+  parent,
   acked,
   onAck,
 }: {
   node: ProblemNode;
-  dag: ProblemDag;
-  depth: number;
+  parent: ProblemNode | undefined;
   acked: boolean;
   onAck?(kind: string): void;
 }) {
   const filters = useFilters();
   const expanded = filters.expandedProblems.has(node.id);
-  const children = childrenOf(dag, node.id);
   const Icon = SEVERITY_ICONS[node.severity];
   const doc = lookupProblemDoc(node.kind);
-  const canExpand = children.length > 0 || node.affectedResources.length > 0 || doc !== undefined;
+  const visibleResources = node.affectedResources.slice(0, 6);
+  const remainingResources = node.affectedResources.length - visibleResources.length;
 
   return (
-    <li className={cn("py-1.5", depth > 0 && "border-l border-border/40 pl-3")}>
+    <li className="py-1.5">
       <div className="flex items-start gap-1.5">
         <button
           type="button"
-          className="mt-0.5 inline-flex h-3 w-3 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
-          onClick={() => canExpand && filters.toggleExpandedProblem(node.id)}
+          className="mt-1 inline-flex h-3 w-3 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+          onClick={() => filters.toggleExpandedProblem(node.id)}
           aria-label={expanded ? "Collapse" : "Expand"}
-          disabled={!canExpand}
         >
-          {canExpand ? (
-            expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />
-          ) : null}
+          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         </button>
         <Icon
           className={cn(
-            "mt-0.5 h-3 w-3 shrink-0",
+            "mt-1 h-3 w-3 shrink-0",
             node.severity === "error" && "text-rose-500",
             node.severity === "warning" && "text-amber-500",
             node.severity === "info" && "text-sky-500",
@@ -113,11 +114,16 @@ function TreeNode({
               )}
             </div>
           </div>
+          {parent && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground">
+              via <span className="font-mono">{parent.kind}</span>
+            </div>
+          )}
           {expanded && (
-            <div className="mt-1 space-y-1.5">
-              {node.affectedResources.length > 0 && (
+            <div className="mt-1.5 space-y-1.5">
+              {visibleResources.length > 0 && (
                 <ul className="space-y-0.5">
-                  {node.affectedResources.map((resource) => (
+                  {visibleResources.map((resource) => (
                     <li key={`${resource.namespace}/${resource.resourceName}`}>
                       <button
                         type="button"
@@ -131,38 +137,23 @@ function TreeNode({
                           })
                         }
                       >
+                        <ArrowUpRight className="mr-1 inline h-2.5 w-2.5" aria-hidden />
                         {resource.namespace}/{resource.resourceName}
                       </button>
                     </li>
                   ))}
+                  {remainingResources > 0 && (
+                    <li className="text-[10px] text-muted-foreground">
+                      … and {remainingResources} more
+                    </li>
+                  )}
                 </ul>
               )}
               {doc && (
-                <div className="space-y-1 rounded bg-muted/40 px-2 py-1.5 text-[11px]">
-                  <div className="font-semibold">{doc.title}</div>
+                <div className="rounded bg-muted/40 px-2 py-1.5 text-[11px] leading-snug">
+                  <div className="mb-0.5 font-semibold">{doc.title}</div>
                   <p className="text-muted-foreground">{doc.explanation}</p>
-                  {doc.firstChecks.length > 0 && (
-                    <ul className="list-disc space-y-0.5 pl-3 text-muted-foreground">
-                      {doc.firstChecks.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                  )}
                 </div>
-              )}
-              {children.length > 0 && (
-                <ul className="space-y-1">
-                  {children.map((child) => (
-                    <TreeNode
-                      key={child.id}
-                      node={child}
-                      dag={dag}
-                      depth={depth + 1}
-                      acked={false}
-                      {...(onAck ? { onAck } : {})}
-                    />
-                  ))}
-                </ul>
               )}
             </div>
           )}
