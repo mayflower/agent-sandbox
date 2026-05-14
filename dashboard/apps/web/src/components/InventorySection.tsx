@@ -529,6 +529,19 @@ export function InventorySection({
 
   const brokenOnly = filters.brokenOnly;
 
+  // Hint operators when a row count of zero is the result of an active
+  // search/namespace filter — common when clicking an event whose target
+  // resource has since been deleted (events linger after a claim/sandbox
+  // is gone).
+  function emptyFor(kind: string): string {
+    const parts: string[] = [];
+    if (filters.search) parts.push(`search "${filters.search}"`);
+    if (filters.namespace) parts.push(`namespace "${filters.namespace}"`);
+    if (brokenOnly) parts.push("broken-only");
+    if (parts.length === 0) return `No ${kind} match.`;
+    return `No ${kind} match ${parts.join(" + ")}. Clear filters to see more — events can reference resources that have already been deleted.`;
+  }
+
   const claimOf = useMemo(() => {
     const map = new Map<string, ClaimLiveView>();
     for (const claim of rawClaims) {
@@ -748,7 +761,7 @@ export function InventorySection({
           expandedKey={expandedKey}
           onToggleRow={toggleRow}
           rowHighlight={(sandbox) => !sandbox.effectiveReady}
-          emptyMessage={brokenOnly ? "No broken sandboxes match." : "No sandboxes match."}
+          emptyMessage={emptyFor("sandboxes")}
           renderDetail={(sandbox) => (
             <SandboxDetail
               sandbox={sandbox}
@@ -765,7 +778,7 @@ export function InventorySection({
           expandedKey={expandedKey}
           onToggleRow={toggleRow}
           rowHighlight={(claim) => !claim.effectiveReady || claim.readinessMismatch}
-          emptyMessage={brokenOnly ? "No broken claims." : "No claims match."}
+          emptyMessage={emptyFor("claims")}
           renderDetail={(claim) => (
             <ClaimDetail
               claim={claim}
@@ -782,7 +795,7 @@ export function InventorySection({
           expandedKey={expandedKey}
           onToggleRow={toggleRow}
           rowHighlight={(pool) => pool.readyReplicas < pool.desiredReplicas}
-          emptyMessage={brokenOnly ? "No underfilled warm pools." : "No warm pools match."}
+          emptyMessage={emptyFor("warm pools")}
           renderDetail={(pool) => (
             <WarmPoolDetail
               pool={pool}
@@ -797,7 +810,7 @@ export function InventorySection({
           data={templates}
           expandedKey={expandedKey}
           onToggleRow={toggleRow}
-          emptyMessage="No templates match."
+          emptyMessage={emptyFor("templates")}
           renderDetail={(template) => (
             <TemplateDetail
               template={template}
