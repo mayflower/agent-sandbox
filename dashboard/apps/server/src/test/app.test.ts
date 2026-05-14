@@ -1,4 +1,4 @@
-import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot, DEFAULT_TENANCY_CONFIG } from "@agent-sandbox/dashboard-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../app.js";
@@ -165,6 +165,40 @@ describe("dashboard server app", () => {
     expect(response.statusCode).toBe(409);
     expect(deleteClaim).not.toHaveBeenCalled();
 
+    await app.close();
+  });
+
+  it("attaches identity per-request when tenancy is enabled", async () => {
+    const app = buildApp({
+      provider: new FakeInventoryProvider(),
+      tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: true },
+    });
+    const response = await app.inject({ method: "GET", url: "/api/overview" });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("returns 503 when identity resolution throws with tenancy enabled", async () => {
+    const provider = new FakeInventoryProvider();
+    vi.spyOn(provider, "getSnapshot").mockRejectedValueOnce(new Error("apiserver throttled"));
+    const app = buildApp({
+      provider,
+      tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: true },
+    });
+    const response = await app.inject({ method: "GET", url: "/api/overview" });
+    expect(response.statusCode).toBe(503);
+    await app.close();
+  });
+
+  it("does not call provider.getSnapshot on identity hook when tenancy is disabled", async () => {
+    const provider = new FakeInventoryProvider();
+    const spy = vi.spyOn(provider, "getSnapshot");
+    const app = buildApp({
+      provider,
+      tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: false },
+    });
+    await app.inject({ method: "GET", url: "/healthz" });
+    expect(spy).not.toHaveBeenCalled();
     await app.close();
   });
 });

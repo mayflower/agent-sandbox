@@ -183,7 +183,7 @@ function DataTable<T extends { namespace: string; name: string }>({
   }, [expandedIndex, expandedKey]);
 
   if (data.length === 0) {
-    return <p className="px-2 py-3 text-xs text-muted-foreground">{emptyMessage ?? "No matching resources."}</p>;
+    return <p className="whitespace-pre-line px-2 py-3 text-xs text-muted-foreground">{emptyMessage ?? "No matching resources."}</p>;
   }
 
   const totalRows = data.length;
@@ -537,9 +537,14 @@ export function InventorySection({
     const parts: string[] = [];
     if (filters.search) parts.push(`search "${filters.search}"`);
     if (filters.namespace) parts.push(`namespace "${filters.namespace}"`);
-    if (brokenOnly) parts.push("broken-only");
+    // `brokenOnly` doesn't apply to templates; the templates view filters by
+    // search+namespace only (see InventorySection's filteredTemplates).
+    if (brokenOnly && kind !== "templates") parts.push("broken-only");
     if (parts.length === 0) return `No ${kind} match.`;
-    return `No ${kind} match ${parts.join(" + ")}. Clear filters to see more — events can reference resources that have already been deleted.`;
+    return (
+      `No ${kind} match ${parts.join(" + ")}.\n` +
+      `Clear filters to see more — events can reference resources that have already been deleted.`
+    );
   }
 
   const claimOf = useMemo(() => {
