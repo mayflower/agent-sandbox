@@ -1,4 +1,4 @@
-import type { EventView, SandboxResourceKind } from "@agent-sandbox/dashboard-shared";
+import type { EventView } from "@agent-sandbox/dashboard-shared";
 import { useMemo } from "react";
 
 import { useFilters } from "@/lib/filters";
@@ -63,13 +63,15 @@ export function EventsFeed({ events }: { events: EventView[] }) {
               >
                 <button
                   type="button"
-                  onClick={() =>
-                    filters.focus({
-                      namespace: event.namespace,
-                      resourceKind: event.resourceKind as SandboxResourceKind,
-                      resourceName: event.resourceName,
-                    })
-                  }
+                  onClick={() => {
+                    // Don't auto-route to the inventory view: the target
+                    // resource may have been deleted (events linger after a
+                    // claim/sandbox is gone) and the user would land on an
+                    // empty inventory tab. Just narrow the feed to this
+                    // resource so they can see its full event trail.
+                    filters.setNamespace(event.namespace);
+                    filters.setSearch(event.resourceName);
+                  }}
                   className="flex w-full items-start gap-2 px-2 py-1 text-left hover:bg-accent hover:text-accent-foreground"
                 >
                   <span
