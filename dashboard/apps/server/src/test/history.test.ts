@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
-import { HistoryStore, FAST_BUFFER_CAPACITY } from "../history/history-store.js";
+import { HistoryStore, FAST_BUFFER_CAPACITY, FULL_SNAPSHOT_CAPACITY } from "../history/history-store.js";
 
 describe("HistoryStore", () => {
   it("records a metrics row per snapshot", () => {
@@ -45,6 +45,25 @@ describe("HistoryStore", () => {
     store.record({ at, snapshot });
     expect(store.snapshotAt(at.getTime())).toBe(snapshot);
     expect(store.snapshotAt(at.getTime() + 5 * 60_000)).toBeUndefined();
+  });
+
+  // Guards against the OOM regression: reverting the cap to FAST_BUFFER_CAPACITY
+  // (240) would let 60 min of full snapshots accumulate on a busy cluster.
+  it("caps the full-snapshot ring and evicts the oldest entry", () => {
+    expect(FULL_SNAPSHOT_CAPACITY).toBe(30);
+    const store = new HistoryStore();
+    const snapshot = createFixtureSnapshot();
+    const start = Date.parse("2026-04-15T10:00:00Z");
+    // Space entries 3 min apart so eviction puts the oldest beyond the 2-min
+    // tolerance window of snapshotAt — proving eviction, not just lookup miss.
+    const stepMs = 3 * 60_000;
+    for (let i = 0; i < FULL_SNAPSHOT_CAPACITY + 1; i += 1) {
+      store.record({ at: new Date(start + i * stepMs), snapshot });
+    }
+    expect(store.internalState().fullCount).toBe(FULL_SNAPSHOT_CAPACITY);
+    expect(store.snapshotAt(start)).toBeUndefined();
+    const newest = start + FULL_SNAPSHOT_CAPACITY * stepMs;
+    expect(store.snapshotAt(newest)).toBe(snapshot);
   });
 
   it("persists rows to disk and replays them on restart", () => {
