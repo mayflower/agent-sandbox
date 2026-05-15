@@ -178,6 +178,8 @@ export function buildApp(options: BuildAppOptions) {
       if (Number.isNaN(fromTime) || Number.isNaN(toTime)) {
         return reply.code(400).send({ message: "from and to must be ISO 8601" });
       }
+      // Full snapshots are retained for ~7.5 min (see FULL_SNAPSHOT_CAPACITY);
+      // diffs against older timestamps 404 here rather than falling back.
       const fromSnapshot = historyStore.snapshotAt(fromTime);
       const toSnapshot = historyStore.snapshotAt(toTime);
       if (!fromSnapshot || !toSnapshot) {

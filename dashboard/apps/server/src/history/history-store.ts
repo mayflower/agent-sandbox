@@ -13,11 +13,10 @@ const FIFTEEN_SECONDS_MS = 15_000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const FAST_BUFFER_CAPACITY = (60 * 60_000) / FIFTEEN_SECONDS_MS; // 240
 const SLOW_BUFFER_CAPACITY = (7 * 24 * 60 * 60_000) / FIVE_MINUTES_MS; // 2016
-// Full inventory snapshots are large (≈5 MB per snapshot at ~300 sandboxes).
-// Keep enough to satisfy `/api/history/diff` for recent timestamps without
-// blowing the Node heap. 7.5 min covers the common "now vs a few minutes ago"
-// case; older diffs return undefined and the UI falls back to live state.
-const FULL_SNAPSHOT_CAPACITY = (7.5 * 60_000) / FIFTEEN_SECONDS_MS; // 30
+// Full snapshots are heap-heavy (one per sandbox + claims/pods/events) so
+// retention is capped well below the 60 min fast/7 d slow metrics rings.
+// Backs `/api/history/diff`; older diffs 404 (see app.ts /api/history/diff).
+const FULL_SNAPSHOT_CAPACITY = 30; // 7.5 min @ 15 s polling
 
 interface RingBufferState<T> {
   capacity: number;
@@ -220,4 +219,4 @@ export class HistoryStore {
   }
 }
 
-export { FAST_BUFFER_CAPACITY, SLOW_BUFFER_CAPACITY, FIFTEEN_SECONDS_MS, FIVE_MINUTES_MS };
+export { FAST_BUFFER_CAPACITY, SLOW_BUFFER_CAPACITY, FULL_SNAPSHOT_CAPACITY, FIFTEEN_SECONDS_MS, FIVE_MINUTES_MS };
