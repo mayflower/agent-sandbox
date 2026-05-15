@@ -6,6 +6,7 @@ import type {
   InventoryProvider,
   InventorySnapshot,
   RawEvent,
+  RawNamespace,
   RawPersistentVolumeClaim,
   RawPod,
   RawSandbox,
@@ -32,6 +33,9 @@ export interface ClusterReader {
   listClaims(): Promise<SupportedList<RawSandboxClaim>>;
   listWarmPools(): Promise<SupportedList<RawSandboxWarmPool>>;
   listTemplates(): Promise<SupportedList<RawSandboxTemplate>>;
+  /** Returns `undefined` when the underlying RBAC denies listing namespaces;
+   *  the identity middleware treats that as a fatal tenancy misconfiguration. */
+  listNamespaces?(): Promise<RawNamespace[] | undefined>;
   readControllerHealth(): Promise<ControllerHealth | null>;
   deleteSandbox(namespace: string, name: string): Promise<void>;
   deleteClaim(namespace: string, name: string): Promise<void>;
@@ -175,6 +179,24 @@ export class KubernetesClusterReader implements ClusterReader {
     return response.items as unknown as RawEvent[];
   }
 
+  async listNamespaces(): Promise<RawNamespace[] | undefined> {
+    try {
+      const response = await this.coreApi.listNamespace();
+      return response.items.map((item) => ({
+        name: item.metadata?.name ?? "",
+        labels: item.metadata?.labels ?? {},
+      })).filter((entry) => entry.name !== "");
+    } catch (error) {
+      // 403 means the dashboard's RBAC doesn't grant Namespace list — tenancy
+      // can't resolve. Return undefined so the identity middleware fails
+      // closed; other errors propagate to the poll loop's health surface.
+      if (httpStatusCodeOf(error) === 403) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   async listClaims(): Promise<SupportedList<RawSandboxClaim>> {
     return safeListCustomObject(async () =>
       this.customObjectsApi.listClusterCustomObject({
@@ -308,7 +330,8 @@ export class KubernetesInventoryProvider implements InventoryProvider {
   }
 
   private async loadSnapshot(startedAt: number): Promise<InventorySnapshot> {
-    const [sandboxes, pods, services, pvcs, events, claims, warmPools, templates, controllerHealth] = await Promise.all([
+    const namespacesPromise = this.reader.listNamespaces?.() ?? Promise.resolve(undefined);
+    const [sandboxes, pods, services, pvcs, events, claims, warmPools, templates, controllerHealth, namespaces] = await Promise.all([
       this.reader.listSandboxes(),
       this.reader.listPods(),
       this.reader.listServices(),
@@ -318,6 +341,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
       this.reader.listWarmPools(),
       this.reader.listTemplates(),
       this.reader.readControllerHealth(),
+      namespacesPromise,
     ]);
 
     const snapshot: InventorySnapshot = {
@@ -337,6 +361,7 @@ export class KubernetesInventoryProvider implements InventoryProvider {
       services,
       pvcs,
       events,
+      ...(namespaces !== undefined ? { namespaces } : {}),
       controllerHealth,
     };
 

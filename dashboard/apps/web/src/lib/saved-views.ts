@@ -86,10 +86,13 @@ export function loadDensity(): Density {
   return value === "compact" || value === "comfortable" || value === "card" ? value : "comfortable";
 }
 
-export function saveDensity(value: Density): void {
+export function saveDensity(value: Density): boolean {
   try {
     window.localStorage.setItem(DENSITY_KEY, value);
-  } catch {
-    /* ignore */
+    return true;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[saved-views] density write failed: ${(error as Error).message}`);
+    return false;
   }
 }

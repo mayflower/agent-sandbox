@@ -238,7 +238,18 @@ function AppContent() {
   }, [problemsQuery.data, filters.search, filters.namespace]);
   const errorCount = scopedProblems.filter((problem) => problem.severity === "error").length;
   const warningCount = scopedProblems.filter((problem) => problem.severity === "warning").length;
-  const controllerHealth = controllerHealthQuery.data ?? null;
+  // Distinguish three controller states:
+  //  1. capability off — not configured, hide the badge entirely.
+  //  2. controller-health query resolved AND returned null — the deployment
+  //     wasn't found in `agent-sandbox-system`. Synthesize an unavailable
+  //     reading so the operator sees the outage instead of a silent gap.
+  //  3. otherwise — render whatever the server returned.
+  const controllerSupported = capabilitiesQuery.data?.controllerHealth === true;
+  const controllerFetched = controllerHealthQuery.isSuccess || controllerHealthQuery.isError;
+  const controllerHealth =
+    controllerSupported && controllerFetched && controllerHealthQuery.data == null
+      ? { available: false, ready: 0, desired: 0, reason: "controller not detected" }
+      : (controllerHealthQuery.data ?? null);
   const controllerDown = controllerHealth !== null && !controllerHealth.available;
   const overall: "ok" | "warning" | "error" =
     controllerDown || errorCount > 0 ? "error" : warningCount > 0 ? "warning" : "ok";

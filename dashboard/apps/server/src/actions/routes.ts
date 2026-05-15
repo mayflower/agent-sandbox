@@ -1,13 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { Identity, InventoryProvider } from "@agent-sandbox/dashboard-shared";
+import { canActOnNamespace, type InventoryProvider } from "@agent-sandbox/dashboard-shared";
 
 interface ActionParams {
   Params: { namespace: string; name: string };
-}
-
-function canActOnNamespace(identity: Identity, namespace: string): boolean {
-  if (identity.role === "operator") return true;
-  return identity.namespaces.includes(namespace);
 }
 
 export interface ActionRoutesDeps {

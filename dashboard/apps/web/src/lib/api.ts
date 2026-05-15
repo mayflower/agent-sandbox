@@ -25,7 +25,19 @@ import type {
 
 export interface OrphanCleanupResult {
   attempted: number;
+  failed: number;
   results: Array<{ namespace: string; name: string; ok: boolean; error?: string }>;
+}
+
+async function parseJsonOrThrow<T>(response: Response, path: string): Promise<T> {
+  // Wrap the raw SyntaxError that response.json() throws so React Query
+  // surfaces "Malformed JSON from /api/foo" instead of "Unexpected token <".
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Malformed JSON response from ${path}: ${detail}`);
+  }
 }
 
 async function requestJson<T>(path: string): Promise<T> {
@@ -33,7 +45,7 @@ async function requestJson<T>(path: string): Promise<T> {
   if (!response.ok) {
     throw new Error(`Request failed for ${path}: ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  return parseJsonOrThrow<T>(response, path);
 }
 
 async function requestJsonOrNull<T>(path: string): Promise<T | null> {
@@ -42,7 +54,7 @@ async function requestJsonOrNull<T>(path: string): Promise<T | null> {
   if (!response.ok) {
     throw new Error(`Request failed for ${path}: ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  return parseJsonOrThrow<T>(response, path);
 }
 
 async function postJson<T>(path: string): Promise<T> {
@@ -56,7 +68,7 @@ async function postJson<T>(path: string): Promise<T> {
     }
     throw new Error(`${response.status}: ${detail || response.statusText}`);
   }
-  return response.json() as Promise<T>;
+  return parseJsonOrThrow<T>(response, path);
 }
 
 export const api = {

@@ -129,31 +129,22 @@ interface ResourceShape {
 }
 
 function getSandboxResourceShape(sandbox: RawSandbox): ResourceShape {
-  const container = sandbox.spec.podTemplate.spec.containers[0];
-  const requests = (container as unknown as { resources?: { requests?: Record<string, string> } } | undefined)
-    ?.resources?.requests;
+  const requests = sandbox.spec.podTemplate.spec.containers[0]?.resources?.requests;
   const storage = (sandbox.spec.volumeClaimTemplates ?? [])
-    .map((vct) =>
-      parseStorageGib(
-        (vct as unknown as { spec?: { resources?: { requests?: { storage?: string } } } })?.spec?.resources?.requests
-          ?.storage,
-      ),
-    )
+    .map((vct) => parseStorageGib(vct.spec?.resources?.requests?.storage))
     .reduce((sum, gib) => sum + gib, 0);
   return {
-    cpuCores: parseCpu(requests?.["cpu"]),
-    memoryGib: parseMemoryGib(requests?.["memory"]),
+    cpuCores: parseCpu(requests?.cpu),
+    memoryGib: parseMemoryGib(requests?.memory),
     storageGib: storage,
   };
 }
 
 export function getTemplateResourceShape(template: RawSandboxTemplate): ResourceShape {
-  const container = template.spec.podTemplate.spec.containers[0];
-  const requests = (container as unknown as { resources?: { requests?: Record<string, string> } } | undefined)
-    ?.resources?.requests;
+  const requests = template.spec.podTemplate.spec.containers[0]?.resources?.requests;
   return {
-    cpuCores: parseCpu(requests?.["cpu"]),
-    memoryGib: parseMemoryGib(requests?.["memory"]),
+    cpuCores: parseCpu(requests?.cpu),
+    memoryGib: parseMemoryGib(requests?.memory),
     storageGib: 0,
   };
 }

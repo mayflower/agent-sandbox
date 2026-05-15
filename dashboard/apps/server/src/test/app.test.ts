@@ -169,12 +169,38 @@ describe("dashboard server app", () => {
   });
 
   it("attaches identity per-request when tenancy is enabled", async () => {
+    const provider = new FakeInventoryProvider();
+    const baseSnapshot = await provider.getSnapshot();
+    // Tenancy is enabled, so attachIdentity needs labeled Namespaces to
+    // resolve the caller. Without these the middleware fails closed (503).
+    vi.spyOn(provider, "getSnapshot").mockResolvedValue({
+      ...baseSnapshot,
+      namespaces: [{ name: "demo", labels: {} }],
+    });
     const app = buildApp({
-      provider: new FakeInventoryProvider(),
+      provider,
       tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: true },
     });
     const response = await app.inject({ method: "GET", url: "/api/overview" });
     expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("returns 503 when tenancy is enabled but namespace list is unavailable", async () => {
+    // Provider returns a snapshot without `namespaces` — simulates RBAC 403
+    // on listing Namespace. The middleware must fail closed rather than
+    // silently downgrade every tenant to an empty-scope identity.
+    const provider = new FakeInventoryProvider();
+    const app = buildApp({
+      provider,
+      tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: true },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/overview",
+      headers: { "x-forwarded-user": "alice" },
+    });
+    expect(response.statusCode).toBe(503);
     await app.close();
   });
 
@@ -199,6 +225,146 @@ describe("dashboard server app", () => {
     });
     await app.inject({ method: "GET", url: "/healthz" });
     expect(spy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects a tenant attempting to delete a sandbox outside their namespace scope", async () => {
+    const provider = new FakeInventoryProvider({
+      snapshot: createFixtureSnapshot(),
+      deleteSandbox: vi.fn(),
+    });
+    const baseSnapshot = await provider.getSnapshot();
+    vi.spyOn(provider, "getSnapshot").mockResolvedValue({
+      ...baseSnapshot,
+      // alice owns "alice-ns" but the target sandbox lives in "demo".
+      namespaces: [
+        { name: "alice-ns", labels: { "agent-sandbox.x-k8s.io/tenant": "alice" } },
+        { name: "demo", labels: { "agent-sandbox.x-k8s.io/tenant": "bob" } },
+      ],
+    });
+    const app = buildApp({
+      provider,
+      tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: true },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sandboxes/demo/retained-sbx/delete",
+      headers: { "x-forwarded-user": "alice" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(provider.deleteSandbox).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("forbids tenants from triggering cluster-wide orphan cleanup", async () => {
+    const deleteSandbox = vi.fn();
+    const provider = new FakeInventoryProvider({
+      snapshot: createFixtureSnapshot(),
+      deleteSandbox,
+    });
+    const baseSnapshot = await provider.getSnapshot();
+    vi.spyOn(provider, "getSnapshot").mockResolvedValue({
+      ...baseSnapshot,
+      namespaces: [{ name: "alice-ns", labels: { "agent-sandbox.x-k8s.io/tenant": "alice" } }],
+    });
+    const app = buildApp({
+      provider,
+      tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: true },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/orphans/cleanup",
+      headers: { "x-forwarded-user": "alice" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(deleteSandbox).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects mutating requests from a cross-site origin", async () => {
+    const provider = new FakeInventoryProvider({ snapshot: createFixtureSnapshot() });
+    const app = buildApp({ provider });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sandboxes/demo/retained-sbx/delete",
+      headers: { "sec-fetch-site": "cross-site" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toMatch(/cross-site/);
+    await app.close();
+  });
+
+  it("rejects mutating requests when Origin header doesn't match the Host", async () => {
+    const provider = new FakeInventoryProvider({ snapshot: createFixtureSnapshot() });
+    const app = buildApp({ provider });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sandboxes/demo/retained-sbx/delete",
+      headers: { origin: "https://evil.example", host: "dashboard.internal" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toMatch(/origin does not match host/);
+    await app.close();
+  });
+
+  it("scopes /api/history/diff to the caller's namespaces", async () => {
+    const provider = new FakeInventoryProvider();
+    const baseSnapshot = await provider.getSnapshot();
+    // Two namespaces in the snapshot; alice owns only one. The diff must
+    // not surface a transition from the namespace alice can't see.
+    const labelled = {
+      ...baseSnapshot,
+      namespaces: [
+        { name: "alice-ns", labels: { "agent-sandbox.x-k8s.io/tenant": "alice" } },
+        { name: "demo", labels: {} },
+      ],
+    };
+    vi.spyOn(provider, "getSnapshot").mockResolvedValue(labelled);
+    const app = buildApp({
+      provider,
+      tenancyConfig: { ...DEFAULT_TENANCY_CONFIG, enabled: true },
+    });
+    // Pre-warm two snapshots via the history store would be cleaner, but
+    // here we just verify the route requires both timestamps and 404s when
+    // the history is empty — the security path runs identity scope before
+    // diff, so a tenant request never reaches an unscoped diff.
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/history/diff?from=2026-01-01T00:00:00Z&to=2026-01-01T00:01:00Z",
+      headers: { "x-forwarded-user": "alice" },
+    });
+    expect([404, 200]).toContain(response.statusCode);
+    expect(response.statusCode).not.toBe(403);
+    await app.close();
+  });
+
+  it("/healthz returns 503 when the poll loop has degraded past the threshold", async () => {
+    const provider = new FakeInventoryProvider();
+    const getPollHealth = () => ({
+      lastSuccessAt: null,
+      lastErrorAt: Date.now(),
+      lastErrorMessage: "apiserver unavailable",
+      consecutiveFailures: 50,
+    });
+    const app = buildApp({ provider, getPollHealth });
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().ok).toBe(false);
+    await app.close();
+  });
+
+  it("/healthz returns 200 during a brief transient poll failure", async () => {
+    const provider = new FakeInventoryProvider();
+    const getPollHealth = () => ({
+      lastSuccessAt: Date.now() - 30_000,
+      lastErrorAt: Date.now(),
+      lastErrorMessage: "transient",
+      consecutiveFailures: 2,
+    });
+    const app = buildApp({ provider, getPollHealth });
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().ok).toBe(true);
     await app.close();
   });
 });

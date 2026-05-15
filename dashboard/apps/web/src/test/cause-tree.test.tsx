@@ -57,7 +57,7 @@ describe("CauseTree", () => {
     expect(screen.getByText(/No problems detected/i)).toBeInTheDocument();
   });
 
-  it("invokes onAck when an ack button is clicked", () => {
+  it("invokes onAck with the first row in severity order when its button is clicked", () => {
     let acked = "";
     render(
       wrap(
@@ -69,11 +69,11 @@ describe("CauseTree", () => {
         />,
       ),
     );
-    // The DAG flattens to two rows (warning + error), each with its own ack
-    // button. Click the first one — the error/runtime-missing row sorts
-    // ahead of the warning by severity.
+    // Flat list sorts by severity (error < warning < info). The fixture has
+    // one error ("runtime-missing") and one warning, so the first row is
+    // unambiguously runtime-missing — any sort-order regression would fail.
     const buttons = screen.getAllByText("ack 1h");
     fireEvent.click(buttons[0]!);
-    expect(["runtime-missing", "unresolved-template-link"]).toContain(acked);
+    expect(acked).toBe("runtime-missing");
   });
 });

@@ -29,10 +29,19 @@ export interface RawContainerPort {
   containerPort: number;
 }
 
+export interface RawResourceRequests {
+  cpu?: string;
+  memory?: string;
+}
+
 export interface RawContainerSpec {
   name: string;
   image: string;
   ports?: RawContainerPort[];
+  resources?: {
+    requests?: RawResourceRequests;
+    limits?: RawResourceRequests;
+  };
 }
 
 export interface RawPodTemplateSpec {
@@ -60,6 +69,11 @@ export interface RawSandbox {
     shutdownPolicy?: "Delete" | "Retain";
     volumeClaimTemplates?: Array<{
       metadata?: { name?: string };
+      spec?: {
+        resources?: {
+          requests?: { storage?: string };
+        };
+      };
     }>;
   };
   status?: {
@@ -189,6 +203,14 @@ export interface ControllerHealth {
   reason?: string;
 }
 
+/** Minimal Namespace info needed to resolve tenant identity. Captured once
+ *  per snapshot so the identity middleware doesn't re-list namespaces on
+ *  every request. */
+export interface RawNamespace {
+  name: string;
+  labels?: Record<string, string>;
+}
+
 export interface InventorySnapshot {
   capabilities: Capabilities;
   sandboxes: RawSandbox[];
@@ -199,6 +221,10 @@ export interface InventorySnapshot {
   services: RawService[];
   pvcs: RawPersistentVolumeClaim[];
   events: RawEvent[];
+  /** Optional: present when the provider can list namespaces with labels.
+   *  Empty array means the call succeeded but found none; absent means the
+   *  provider didn't attempt it (FakeProvider in tests, older snapshots). */
+  namespaces?: RawNamespace[];
   controllerHealth: ControllerHealth | null;
 }
 
@@ -233,12 +259,19 @@ export function viewForKind(kind: SandboxResourceKind): InventoryView {
   }
 }
 
-export interface ActionResult {
-  kind: "Sandbox" | "SandboxClaim";
-  namespace: string;
-  name: string;
-  action: "deleted" | "reconciled";
-}
+export type SandboxAction = "deleted" | "reconciled" | "paused" | "resumed";
+export type SandboxClaimAction = "deleted" | "extended";
+
+export type ActionResult =
+  | { kind: "Sandbox"; namespace: string; name: string; action: SandboxAction }
+  | { kind: "SandboxClaim"; namespace: string; name: string; action: "deleted" }
+  | {
+      kind: "SandboxClaim";
+      namespace: string;
+      name: string;
+      action: "extended";
+      shutdownTime: string;
+    };
 
 export interface StatDatum {
   label: string;
@@ -398,9 +431,14 @@ export interface ProblemGroup {
   items: ProblemView[];
 }
 
+/** Resource kinds that can appear on events/timeline entries. Includes the
+ *  Sandbox CRD family plus the auxiliary kinds k8s emits about (Pod) and that
+ *  the sandbox-router service emits about (Router). */
+export type EventResourceKind = SandboxResourceKind | "Pod" | "Router";
+
 export interface EventView {
   namespace: string;
-  resourceKind: string;
+  resourceKind: EventResourceKind;
   resourceName: string;
   reason?: string;
   type?: string;
@@ -537,7 +575,7 @@ export interface TimelineEvent {
   kind: TimelineEventKind;
   /** ISO 8601 event time. */
   at: string;
-  resourceKind: SandboxResourceKind | "Pod" | "Router";
+  resourceKind: EventResourceKind;
   resourceName: string;
   namespace: string;
   /** Short reason code (e.g. PodScheduled, Ready=True). */
