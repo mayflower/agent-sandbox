@@ -49,49 +49,61 @@ export function startPollLoop(deps: PollLoopDeps): PollLoopHandle {
     lastErrorMessage: null,
     consecutiveFailures: 0,
   };
+  // Guard against overlapping ticks: if a tick takes >intervalMs (slow
+  // apiserver, watch storm), the next setInterval callback fires before the
+  // current one resolves. Two concurrent calls to snapshotDiffSource.consume()
+  // would observe and overwrite `previous` independently and emit duplicate
+  // transitions. Skip the new tick and let the in-flight one finish.
+  let running = false;
 
   async function tick(): Promise<void> {
-    let snapshot: InventorySnapshot;
+    if (running) return;
+    running = true;
     try {
-      snapshot = await deps.provider.getSnapshot();
-    } catch (error) {
-      health.lastErrorAt = Date.now();
-      health.lastErrorMessage = (error as Error).message;
-      health.consecutiveFailures += 1;
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[poll] snapshot fetch failed (${health.consecutiveFailures} consecutive): ${health.lastErrorMessage}`,
-      );
-      return;
+      let snapshot: InventorySnapshot;
+      try {
+        snapshot = await deps.provider.getSnapshot();
+      } catch (error) {
+        health.lastErrorAt = Date.now();
+        health.lastErrorMessage = (error as Error).message;
+        health.consecutiveFailures += 1;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[poll] snapshot fetch failed (${health.consecutiveFailures} consecutive): ${health.lastErrorMessage}`,
+        );
+        return;
+      }
+
+      const rates = deps.getCostRates();
+      const at = new Date();
+      deps.historyStore.record({
+        at,
+        snapshot,
+        cost: rates ? buildSnapshotCost(snapshot, rates, at) : null,
+      });
+
+      // Timeline: K8s events per sandbox.
+      for (const raw of snapshot.sandboxes) {
+        const namespace = raw.metadata.namespace ?? "default";
+        const podName =
+          raw.metadata.annotations?.["agents.x-k8s.io/pod-name"] ?? raw.metadata.name;
+        const ingestArg: Parameters<TimelineStore["ingest"]>[0] = { namespace, name: raw.metadata.name };
+        const events = eventsForSandbox(snapshot, { namespace, name: raw.metadata.name, podName });
+        if (events.length > 0) deps.timelineStore.ingest(ingestArg, events);
+      }
+
+      // Timeline: snapshot-diff transitions.
+      const transitions = diffSource.consume(snapshot);
+      for (const [key, events] of transitions) {
+        const [namespace, ...rest] = key.split("/");
+        deps.timelineStore.ingest({ namespace: namespace!, name: rest.join("/") }, events);
+      }
+
+      health.lastSuccessAt = Date.now();
+      health.consecutiveFailures = 0;
+    } finally {
+      running = false;
     }
-
-    const rates = deps.getCostRates();
-    const at = new Date();
-    deps.historyStore.record({
-      at,
-      snapshot,
-      cost: rates ? buildSnapshotCost(snapshot, rates, at) : null,
-    });
-
-    // Timeline: K8s events per sandbox.
-    for (const raw of snapshot.sandboxes) {
-      const namespace = raw.metadata.namespace ?? "default";
-      const podName =
-        raw.metadata.annotations?.["agents.x-k8s.io/pod-name"] ?? raw.metadata.name;
-      const ingestArg: Parameters<TimelineStore["ingest"]>[0] = { namespace, name: raw.metadata.name };
-      const events = eventsForSandbox(snapshot, { namespace, name: raw.metadata.name, podName });
-      if (events.length > 0) deps.timelineStore.ingest(ingestArg, events);
-    }
-
-    // Timeline: snapshot-diff transitions.
-    const transitions = diffSource.consume(snapshot);
-    for (const [key, events] of transitions) {
-      const [namespace, ...rest] = key.split("/");
-      deps.timelineStore.ingest({ namespace: namespace!, name: rest.join("/") }, events);
-    }
-
-    health.lastSuccessAt = Date.now();
-    health.consecutiveFailures = 0;
   }
 
   if (deps.runImmediately !== false) {

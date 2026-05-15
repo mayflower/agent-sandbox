@@ -58,6 +58,13 @@ export function buildIdentity(
   };
 }
 
+/** Allow a mutating action against a single namespace. Operators bypass; a
+ *  tenant must have the namespace listed in `identity.namespaces`. */
+export function canActOnNamespace(identity: Identity, namespace: string): boolean {
+  if (identity.role === "operator") return true;
+  return identity.namespaces.includes(namespace);
+}
+
 /** Return a snapshot scoped to the namespaces visible to the identity.
  *  An operator sees everything; a tenant only namespaces in `identity.namespaces`. */
 export function filterSnapshotForIdentity(

@@ -2,6 +2,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import {
   buildOverviewSnapshot,
+  canActOnNamespace,
   classifyProblems,
   diffSnapshots,
   captureSnapshot,
@@ -33,6 +34,25 @@ import { registerActionRoutes } from "./actions/routes.js";
 import { registerBehaviorRoutes } from "./behavior/routes.js";
 import { attachIdentity } from "./identity/middleware.js";
 
+function pickHeader(
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined {
+  const value = headers[name];
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+/** Compare Origin (`scheme://host[:port]`) against the request's Host header
+ *  (`host[:port]`). Returns true when the origin's host+port match the request's. */
+function originMatchesHost(origin: string, host: string): boolean {
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 export interface BuildAppOptions {
   provider: InventoryProvider;
   staticDir?: string;
@@ -56,6 +76,31 @@ export function buildApp(options: BuildAppOptions) {
   const getPodMetrics = options.getPodMetrics ?? (() => []);
 
   app.register(cors, { origin: true });
+
+  // CSRF guard: reject mutating requests that didn't originate from the same
+  // site as the dashboard. cors({origin:true}) reflects Origin which would
+  // otherwise let a malicious page drive POST /api/sandboxes/*/delete with the
+  // user's headers. `Sec-Fetch-Site` is set by every modern browser; if it's
+  // absent, fall back to Origin/Host comparison so non-browser clients (curl,
+  // tests via Fastify.inject) keep working.
+  const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+  app.addHook("onRequest", async (request, reply) => {
+    if (!MUTATING_METHODS.has(request.method)) return;
+    const fetchSite = pickHeader(request.headers, "sec-fetch-site");
+    if (fetchSite !== undefined) {
+      if (fetchSite === "same-origin" || fetchSite === "same-site" || fetchSite === "none") return;
+      return reply.code(403).send({ message: "cross-site mutating request rejected" });
+    }
+    const origin = pickHeader(request.headers, "origin");
+    if (origin === undefined) return; // curl / Fastify.inject — no Origin sent.
+    const host = pickHeader(request.headers, "host");
+    if (host === undefined) {
+      return reply.code(403).send({ message: "host header required for cross-origin POST" });
+    }
+    if (!originMatchesHost(origin, host)) {
+      return reply.code(403).send({ message: "origin does not match host" });
+    }
+  });
 
   if (options.staticDir && existsSync(options.staticDir)) {
     app.register(fastifyStatic, {
@@ -97,15 +142,31 @@ export function buildApp(options: BuildAppOptions) {
     return filterSnapshotForIdentity(snapshot, identity);
   }
 
-  app.get("/healthz", async () => {
+  // Conservative degraded threshold: 12 consecutive failures ≈ 3 min at 15 s
+  // polling. Below this we still report ok so a transient apiserver hiccup
+  // doesn't trigger k8s to restart a pod that would self-recover in seconds.
+  // Above this — or if we never produced a snapshot at all — the upstream is
+  // broken enough that k8s should mark the pod unready / restart it.
+  const POLL_DEGRADED_THRESHOLD = 12;
+
+  app.get("/healthz", async (_request, reply) => {
     const pollHealth = options.getPollHealth?.() ?? null;
     const costStatus = options.getCostStatus?.() ?? null;
-    return {
-      ok: true,
+    const history = historyStore.persistenceState();
+    const pollDegraded =
+      pollHealth !== null &&
+      (pollHealth.consecutiveFailures >= POLL_DEGRADED_THRESHOLD ||
+        (pollHealth.lastSuccessAt === null && pollHealth.lastErrorAt !== null));
+    const body = {
+      ok: !pollDegraded,
       poll: pollHealth,
       cost: costStatus,
-      history: historyStore.persistenceState(),
+      history,
     };
+    if (pollDegraded) {
+      return reply.code(503).send(body);
+    }
+    return body;
   });
 
   app.get("/api/cost/status", async () => options.getCostStatus?.() ?? null);
@@ -212,6 +273,9 @@ export function buildApp(options: BuildAppOptions) {
       return reply.code(501).send({ message: "Deletion not supported by provider" });
     }
     const { namespace, name } = request.params;
+    if (!canActOnNamespace(request.identity, namespace)) {
+      return reply.code(403).send({ message: "namespace not in identity scope" });
+    }
     const snapshot = await options.provider.getSnapshot();
     const sandboxes = normalizeSandboxes(snapshot);
     const target = sandboxes.find((sandbox) => sandbox.namespace === namespace && sandbox.name === name);
@@ -238,6 +302,9 @@ export function buildApp(options: BuildAppOptions) {
       return reply.code(501).send({ message: "Reconcile not supported by provider" });
     }
     const { namespace, name } = request.params;
+    if (!canActOnNamespace(request.identity, namespace)) {
+      return reply.code(403).send({ message: "namespace not in identity scope" });
+    }
     const snapshot = await options.provider.getSnapshot();
     const sandbox = snapshot.sandboxes.find(
       (entry) => entry.metadata.name === name && (entry.metadata.namespace ?? "default") === namespace,
@@ -255,6 +322,9 @@ export function buildApp(options: BuildAppOptions) {
       return reply.code(501).send({ message: "Deletion not supported by provider" });
     }
     const { namespace, name } = request.params;
+    if (!canActOnNamespace(request.identity, namespace)) {
+      return reply.code(403).send({ message: "namespace not in identity scope" });
+    }
     const snapshot = await options.provider.getSnapshot();
     const claim = snapshot.claims.find(
       (entry) => entry.metadata.name === name && (entry.metadata.namespace ?? "default") === namespace,
@@ -278,9 +348,14 @@ export function buildApp(options: BuildAppOptions) {
     return { kind: "SandboxClaim", namespace, name, action: "deleted" };
   });
 
-  app.post("/api/orphans/cleanup", async (_request, reply) => {
+  app.post("/api/orphans/cleanup", async (request, reply) => {
     if (!options.provider.deleteSandbox) {
       return reply.code(501).send({ message: "Deletion not supported by provider" });
+    }
+    // Cluster-wide bulk delete: refuse if the caller is a tenant. The
+    // per-namespace `/delete` route stays available for scoped cleanup.
+    if (request.identity.role !== "operator") {
+      return reply.code(403).send({ message: "orphan cleanup is operator-only" });
     }
     const snapshot = await options.provider.getSnapshot();
     const sandboxes = normalizeSandboxes(snapshot);
@@ -291,21 +366,26 @@ export function buildApp(options: BuildAppOptions) {
         sandbox.ageSeconds >= ORPHAN_MIN_AGE_SECONDS,
     );
     const results = [] as Array<{ namespace: string; name: string; ok: boolean; error?: string }>;
+    let failed = 0;
     for (const sandbox of orphans) {
       try {
         await options.provider.deleteSandbox(sandbox.namespace, sandbox.name);
         audit(`delete sandbox ${sandbox.namespace}/${sandbox.name} reason=orphan-bulk`);
         results.push({ namespace: sandbox.namespace, name: sandbox.name, ok: true });
       } catch (error) {
-        results.push({
-          namespace: sandbox.namespace,
-          name: sandbox.name,
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        failed += 1;
+        const message = error instanceof Error ? error.message : String(error);
+        // eslint-disable-next-line no-console
+        console.error(`[action] orphan cleanup failed for ${sandbox.namespace}/${sandbox.name}: ${message}`);
+        results.push({ namespace: sandbox.namespace, name: sandbox.name, ok: false, error: message });
       }
     }
-    return { attempted: orphans.length, results };
+    // 207 when any item failed so callers can branch on the status alone;
+    // 200 otherwise (including zero attempted, which is a no-op success).
+    if (failed > 0) {
+      return reply.code(207).send({ attempted: orphans.length, failed, results });
+    }
+    return { attempted: orphans.length, failed, results };
   });
 
   app.get<{
@@ -331,7 +411,13 @@ export function buildApp(options: BuildAppOptions) {
     });
   });
 
-  app.get("/*", async (_request, reply) => {
+  app.get("/*", async (request, reply) => {
+    // Don't shadow /api typos with the SPA shell — a missed route name would
+    // otherwise return 200 HTML and clients would fail on `response.json()`
+    // with a cryptic SyntaxError instead of a 404.
+    if (request.url.startsWith("/api/")) {
+      return reply.code(404).send({ message: "Not Found" });
+    }
     if (options.staticDir && existsSync(path.join(options.staticDir, "index.html"))) {
       return reply.sendFile("index.html");
     }

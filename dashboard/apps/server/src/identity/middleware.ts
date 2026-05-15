@@ -30,21 +30,22 @@ export function loadTenancyConfig(env: NodeJS.ProcessEnv = process.env): Tenancy
   };
 }
 
-/** Decorate every request with `request.identity`. */
+/** Decorate every request with `request.identity`. Throws when tenancy is
+ *  enabled but the provider can't enumerate labeled Namespaces — that's a
+ *  cross-tenant data-leak risk, so the caller (app.ts onRequest hook) maps
+ *  the throw to 503 instead of silently downgrading the identity. */
 export async function attachIdentity(
   request: FastifyRequest,
   _reply: FastifyReply,
   deps: IdentityDeps,
 ): Promise<void> {
   const snapshot = await deps.provider.getSnapshot();
-  const knownNamespaces = new Set<string>();
-  for (const sandbox of snapshot.sandboxes) {
-    if (sandbox.metadata.namespace) knownNamespaces.add(sandbox.metadata.namespace);
+  // Real Namespace objects carry the tenant-label selector. Without them
+  // every tenant resolves to namespaces:[] and silently sees nothing.
+  if (snapshot.namespaces === undefined) {
+    throw new Error(
+      "tenancy is enabled but provider returned no namespace list (missing RBAC list verb on Namespace?)",
+    );
   }
-  for (const claim of snapshot.claims) {
-    if (claim.metadata.namespace) knownNamespaces.add(claim.metadata.namespace);
-  }
-
-  const namespaceList = [...knownNamespaces].map((name) => ({ name }));
-  request.identity = buildIdentity(request.headers, deps.config, namespaceList);
+  request.identity = buildIdentity(request.headers, deps.config, snapshot.namespaces);
 }

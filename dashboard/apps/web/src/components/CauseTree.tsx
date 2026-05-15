@@ -1,4 +1,4 @@
-import type { ProblemDag, ProblemNode, SandboxResourceKind } from "@agent-sandbox/dashboard-shared";
+import type { ProblemDag, ProblemNode } from "@agent-sandbox/dashboard-shared";
 import { lookupProblemDoc } from "@agent-sandbox/dashboard-shared";
 import { ChevronDown, ChevronRight, AlertCircle, AlertTriangle, ArrowUpRight, Info } from "lucide-react";
 
@@ -132,7 +132,7 @@ function ProblemRow({
                         onClick={() =>
                           filters.focus({
                             namespace: resource.namespace,
-                            resourceKind: resource.resourceKind as SandboxResourceKind,
+                            resourceKind: resource.resourceKind,
                             resourceName: resource.resourceName,
                           })
                         }

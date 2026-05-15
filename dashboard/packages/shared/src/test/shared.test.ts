@@ -133,8 +133,10 @@ describe("shared dashboard domain helpers", () => {
     expect(problems.some((problem) => problem.kind === "claim-stuck-pending")).toBe(true);
   });
 
-  it("keeps unknown event kinds and only uses controller owners marked true", () => {
+  it("drops unknown event kinds and only uses controller owners marked true", () => {
     const snapshot = createFixtureSnapshot();
+    // PVC events are not part of the sandbox UI's vocabulary; dropping them
+    // keeps the feed scoped to kinds the dashboard can route and explain.
     snapshot.events.unshift({
       metadata: { name: "pvc-event", namespace: "demo", creationTimestamp: "2026-04-15T12:00:01Z" },
       regarding: { kind: "PersistentVolumeClaim", name: "demo-pvc", namespace: "demo" },
@@ -164,7 +166,10 @@ describe("shared dashboard domain helpers", () => {
     const sandboxes = normalizeSandboxes(snapshot, now);
     const ambiguous = sandboxes.find((sandbox) => sandbox.name === "ambiguous-owner");
 
-    expect(events[0]?.resourceKind).toBe("PersistentVolumeClaim");
+    expect(events.find((event) => event.resourceName === "demo-pvc")).toBeUndefined();
+    expect(events.every((event) =>
+      ["Sandbox", "SandboxClaim", "SandboxWarmPool", "SandboxTemplate", "Pod", "Router"].includes(event.resourceKind),
+    )).toBe(true);
     expect(ambiguous?.ownerKind).toBe("warm-pool");
     expect(ambiguous?.warmPoolName).toBe("fast-pool");
   });
