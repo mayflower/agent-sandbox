@@ -225,6 +225,36 @@ spec:
                 - Managed
                 - Unmanaged
                 type: string
+              persistentStorage:
+                properties:
+                  mounts:
+                    items:
+                      properties:
+                        bootstrapFromImage:
+                          type: boolean
+                        path:
+                          minLength: 1
+                          pattern: ^/.*
+                          type: string
+                      required:
+                      - path
+                      type: object
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - path
+                    x-kubernetes-list-type: map
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storageClassName:
+                    type: string
+                required:
+                - mounts
+                type: object
               podTemplate:
                 properties:
                   metadata:

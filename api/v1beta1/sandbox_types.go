@@ -16,6 +16,7 @@ package v1beta1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -177,6 +178,13 @@ type SandboxBlueprint struct {
 	// +listType=atomic
 	VolumeClaimTemplates []PersistentVolumeClaimTemplate `json:"volumeClaimTemplates,omitempty"`
 
+	// persistentStorage configures filesystem storage that is preserved across
+	// sandbox pod restarts and suspend/resume cycles. This provides the first
+	// filesystem-layer snapshot provider for sandboxes. Because it lives on the
+	// shared blueprint, it is promoted to both Sandbox and SandboxTemplate.
+	// +optional
+	PersistentStorage *PersistentStorageSpec `json:"persistentStorage,omitempty"`
+
 	// service controls whether the controller should automatically create a
 	// headless Service for the Sandbox workload.
 	// When unset, the controller preserves existing Services for backward
@@ -185,6 +193,44 @@ type SandboxBlueprint struct {
 	//nolint:kubeapilinter // Enum not used to avoid duplicating the Service API; field is not expected to extend (issue #746).
 	// +optional
 	Service *bool `json:"service,omitempty"`
+}
+
+// PersistentStorageSpec defines filesystem storage that is preserved across
+// sandbox pod restarts and suspend/resume cycles.
+type PersistentStorageSpec struct {
+	// size is the requested storage capacity for the persistent filesystem.
+	// When omitted, the controller chooses an implementation-defined default.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// storageClassName is the StorageClass to use for the persistent filesystem PVC.
+	// When omitted, the cluster's default StorageClass is used.
+	// +optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// mounts is the list of absolute container paths backed by the persistent filesystem.
+	// Each mount path is backed by a distinct directory within the same persistent volume.
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=path
+	// +required
+	Mounts []PersistentMount `json:"mounts"`
+}
+
+// PersistentMount defines one container path backed by persistent storage.
+type PersistentMount struct {
+	// path is an absolute container path to mount from the persistent filesystem.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^/.*`
+	// +required
+	Path string `json:"path"`
+
+	// bootstrapFromImage controls whether an empty persistent directory is initialized
+	// from the image contents already present at path. When omitted, defaults to true.
+	//nolint:kubeapilinter
+	//nolint:nobools // The field intentionally models a narrow true/false bootstrap toggle.
+	// +optional
+	BootstrapFromImage *bool `json:"bootstrapFromImage,omitempty"`
 }
 
 // SandboxSpec defines the desired state of Sandbox.

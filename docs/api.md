@@ -242,6 +242,43 @@ _Appears in:_
 | `shutdownPolicy` _[ShutdownPolicy](#shutdownpolicy)_ | shutdownPolicy determines if the Sandbox resource itself should be deleted when it expires.<br />Underlying resources(Pods, Services) are always deleted on expiry. | Retain | Enum: [Delete Retain] <br />Optional: \{\} <br /> |
 
 
+#### PersistentMount
+
+
+
+PersistentMount defines one container path backed by persistent storage.
+
+
+
+_Appears in:_
+- [PersistentStorageSpec](#persistentstoragespec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `path` _string_ | path is an absolute container path to mount from the persistent filesystem. |  | MinLength: 1 <br />Pattern: `^/.*` <br />Required: \{\} <br /> |
+| `bootstrapFromImage` _boolean_ | bootstrapFromImage controls whether an empty persistent directory is initialized<br />from the image contents already present at path. When omitted, defaults to true. |  | Optional: \{\} <br /> |
+
+
+#### PersistentStorageSpec
+
+
+
+PersistentStorageSpec defines filesystem storage that is preserved across
+sandbox pod restarts and suspend/resume cycles.
+
+
+
+_Appears in:_
+- [SandboxSpec](#sandboxspec)
+- [SandboxTemplateSpec](#sandboxtemplatespec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `size` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#quantity-resource-api)_ | size is the requested storage capacity for the persistent filesystem.<br />When omitted, the controller chooses an implementation-defined default. |  | Optional: \{\} <br /> |
+| `storageClassName` _string_ | storageClassName is the StorageClass to use for the persistent filesystem PVC.<br />When omitted, the cluster's default StorageClass is used. |  | Optional: \{\} <br /> |
+| `mounts` _[PersistentMount](#persistentmount) array_ | mounts is the list of absolute container paths backed by the persistent filesystem.<br />Each mount path is backed by a distinct directory within the same persistent volume. |  | MinItems: 1 <br />Required: \{\} <br /> |
+
+
 #### PersistentVolumeClaimTemplate
 
 
@@ -372,6 +409,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `podTemplate` _[PodTemplate](#podtemplate)_ | podTemplate describes the pod that will be created in the sandbox.<br />Note: When provisioned via a SandboxTemplate (such as by a SandboxClaim or SandboxWarmPool),<br />if AutomountServiceAccountToken is not specified in the PodSpec, the controller defaults it<br />to false to ensure a secure-by-default environment. |  | Required: \{\} <br /> |
 | `volumeClaimTemplates` _[PersistentVolumeClaimTemplate](#persistentvolumeclaimtemplate) array_ | volumeClaimTemplates is a list of claims that the sandbox pod is allowed to reference.<br />When creating a sandbox, PVCs will be created from these templates.<br />Every claim in this list must have at least one matching access mode with a provisioner volume.<br />NOTE: This list is atomic. Updates to this field will replace the entire list rather than merging with existing entries. |  | Optional: \{\} <br /> |
+| `persistentStorage` _[PersistentStorageSpec](#persistentstoragespec)_ | persistentStorage configures filesystem storage that is preserved across<br />sandbox pod restarts and suspend/resume cycles. This provides the first<br />filesystem-layer snapshot provider for sandboxes. Because it lives on the<br />shared blueprint, it is promoted to both Sandbox and SandboxTemplate. |  | Optional: \{\} <br /> |
 | `service` _boolean_ | service controls whether the controller should automatically create a<br />headless Service for the Sandbox workload.<br />When unset, the controller preserves existing Services for backward<br />compatibility but does not create new ones. Set to true to enable or false<br />to explicitly disable and remove the Service. |  | Optional: \{\} <br /> |
 | `shutdownTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#time-v1-meta)_ | shutdownTime is the absolute time when the sandbox expires. |  | Format: date-time <br />Optional: \{\} <br /> |
 | `shutdownPolicy` _[ShutdownPolicy](#shutdownpolicy)_ | shutdownPolicy determines if the Sandbox resource itself should be deleted when it expires.<br />Underlying resources(Pods, Services) are always deleted on expiry. | Retain | Enum: [Delete Retain] <br />Optional: \{\} <br /> |
@@ -1015,6 +1053,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `podTemplate` _[PodTemplate](#podtemplate)_ | podTemplate describes the pod that will be created in the sandbox.<br />Note: When provisioned via a SandboxTemplate (such as by a SandboxClaim or SandboxWarmPool),<br />if AutomountServiceAccountToken is not specified in the PodSpec, the controller defaults it<br />to false to ensure a secure-by-default environment. |  | Required: \{\} <br /> |
 | `volumeClaimTemplates` _[PersistentVolumeClaimTemplate](#persistentvolumeclaimtemplate) array_ | volumeClaimTemplates is a list of claims that the sandbox pod is allowed to reference.<br />When creating a sandbox, PVCs will be created from these templates.<br />Every claim in this list must have at least one matching access mode with a provisioner volume.<br />NOTE: This list is atomic. Updates to this field will replace the entire list rather than merging with existing entries. |  | Optional: \{\} <br /> |
+| `persistentStorage` _[PersistentStorageSpec](#persistentstoragespec)_ | persistentStorage configures filesystem storage that is preserved across<br />sandbox pod restarts and suspend/resume cycles. This provides the first<br />filesystem-layer snapshot provider for sandboxes. Because it lives on the<br />shared blueprint, it is promoted to both Sandbox and SandboxTemplate. |  | Optional: \{\} <br /> |
 | `service` _boolean_ | service controls whether the controller should automatically create a<br />headless Service for the Sandbox workload.<br />When unset, the controller preserves existing Services for backward<br />compatibility but does not create new ones. Set to true to enable or false<br />to explicitly disable and remove the Service. |  | Optional: \{\} <br /> |
 | `networkPolicy` _[NetworkPolicySpec](#networkpolicyspec)_ | networkPolicy defines the network policy to be applied to the sandboxes<br />created from this template. A single shared NetworkPolicy is created per Template.<br />Behavior is dictated by the NetworkPolicyManagement field:<br />- If Management is "Unmanaged": This field is completely ignored.<br />- If Management is "Managed" (default) and this field is omitted (nil): The controller<br />  automatically applies a strict Secure Default policy:<br />    * Ingress: Allow traffic only from the Sandbox Router.<br />    * Egress: Allow Public Internet only. Blocks internal IPs (RFC1918), Metadata Server, etc.<br />- If Management is "Managed" and this field is provided: The controller applies your custom rules.<br />Update Behavior:<br />Because the NetworkPolicy is shared at the template level, any updates to these rules<br />will be applied to the single shared policy object. The underlying Kubernetes CNI will then<br />dynamically enforce the updated rules across all existing and future sandboxes<br />referencing this template.<br />NOTE: This is a restricted subset of the standard Kubernetes NetworkPolicySpec.<br />Fields like 'PodSelector' and 'PolicyTypes' are intentionally excluded because<br />they are managed by the controller to ensure strict isolation and default-deny posture.<br />WARNING: This policy enforces a strict "Default Deny" ingress posture.<br />If your Pod uses sidecars (e.g., Istio proxy, monitoring agents) that listen<br />on their own ports, the NetworkPolicy will BLOCK traffic to them by default.<br />You MUST explicitly allow traffic to these sidecar ports using 'Ingress',<br />otherwise the sidecars may fail health checks. |  | Optional: \{\} <br /> |
 | `networkPolicyManagement` _[NetworkPolicyManagement](#networkpolicymanagement)_ | networkPolicyManagement defines whether the controller manages the NetworkPolicy.<br />Valid values are "Managed" (default) or "Unmanaged". | Managed | Enum: [Managed Unmanaged] <br />Optional: \{\} <br /> |
