@@ -1,5 +1,5 @@
 import type { InventoryProvider, InventorySnapshot, Capabilities } from "@agent-sandbox/dashboard-shared";
-import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 
 export interface FakeInventoryProviderOptions {
   snapshot?: InventorySnapshot;

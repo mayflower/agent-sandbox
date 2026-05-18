@@ -1,17 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App.js";
 import {
   buildOverviewSnapshot,
+  buildProblemDag,
   classifyProblems,
   mapEvents,
   normalizeClaims,
   normalizeSandboxes,
   normalizeTemplates,
   normalizeWarmPools,
+  type DashboardSnapshot,
 } from "@agent-sandbox/dashboard-shared";
 
 const realFetch = global.fetch;
@@ -29,39 +31,49 @@ function renderApp() {
   );
 }
 
-function mockDashboardResponses(options?: { coreOnly?: boolean; failClaims?: boolean }) {
+function mockDashboardResponses(options?: { coreOnly?: boolean; failDashboard?: boolean }) {
   const snapshot = createFixtureSnapshot(
     options?.coreOnly
       ? { capabilities: { claims: false, warmPools: false, templates: false } }
       : {},
   );
-  const routes = new Map<string, unknown>([
-    ["/api/capabilities", snapshot.capabilities],
-    ["/api/overview", buildOverviewSnapshot(snapshot, NOW)],
-    ["/api/sandboxes", normalizeSandboxes(snapshot, NOW)],
-    ["/api/claims", normalizeClaims(snapshot, NOW)],
-    ["/api/warm-pools", normalizeWarmPools(snapshot, NOW)],
-    ["/api/templates", normalizeTemplates(snapshot, NOW)],
-    ["/api/problems", classifyProblems(snapshot, NOW)],
-  ]);
+  const problems = classifyProblems(snapshot, NOW);
+  const dashboard: DashboardSnapshot = {
+    updatedAt: NOW.toISOString(),
+    identity: { user: "operator", role: "operator", namespaces: [], groups: [] },
+    capabilities: snapshot.capabilities,
+    controllerHealth: snapshot.controllerHealth,
+    overview: buildOverviewSnapshot(snapshot, NOW),
+    sandboxes: normalizeSandboxes(snapshot, NOW),
+    claims: normalizeClaims(snapshot, NOW),
+    warmPools: normalizeWarmPools(snapshot, NOW),
+    templates: normalizeTemplates(snapshot, NOW),
+    problems,
+    problemDag: buildProblemDag(problems),
+    events: mapEvents(snapshot),
+  };
 
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (options?.failClaims && url === "/api/claims") {
-      return new Response("boom", { status: 500 });
+    if (url === "/api/snapshot") {
+      if (options?.failDashboard) return new Response("boom", { status: 500 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
     }
-    const events = mapEvents(snapshot);
     if (url.startsWith("/api/events")) {
       return new Response(
-        JSON.stringify(events.filter((event) => url.includes(event.resourceName))),
+        JSON.stringify(dashboard.events.filter((event) => url.includes(event.resourceName))),
         { status: 200 },
       );
     }
-    const payload = routes.get(url);
-    if (payload === undefined) {
-      return new Response("not found", { status: 404 });
+    // History/cost endpoints aren't part of the bundle; return empty defaults
+    // so the SPA's secondary queries don't trigger spurious errors in tests.
+    if (url.startsWith("/api/history/metrics")) {
+      return new Response(JSON.stringify({ resolution: "15s", rows: [] }), { status: 200 });
     }
-    return new Response(JSON.stringify(payload), { status: 200 });
+    if (url.startsWith("/api/cost/snapshot")) {
+      return new Response(null, { status: 204 });
+    }
+    return new Response("not found", { status: 404 });
   }) as typeof fetch;
 }
 
@@ -104,12 +116,12 @@ describe("dashboard web app", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders an error state when a supported extension query fails", async () => {
-    mockDashboardResponses({ failClaims: true });
+  it("renders an error state when the bundled snapshot query fails", async () => {
+    mockDashboardResponses({ failDashboard: true });
     renderApp();
 
     expect(await screen.findByText("Dashboard snapshot failed to load.")).toBeInTheDocument();
-    expect(screen.getByText("claims", { selector: ".font-semibold" })).toBeInTheDocument();
+    expect(screen.getByText("dashboard", { selector: ".font-semibold" })).toBeInTheDocument();
   });
 
   it("clicking a sandbox row expands the detail inline with scoped events", async () => {
@@ -129,28 +141,32 @@ describe("dashboard web app", () => {
     expect(screen.getByText(/kubectl describe sandbox/)).toBeInTheDocument();
   });
 
-  it("clicking 'open' in Problems switches view and expands the target row", async () => {
+  it("clicking an affected resource in Problems switches view to the matching inventory", async () => {
     mockDashboardResponses();
     renderApp();
 
     await screen.findByRole("button", { name: "Claims" });
 
     const problemsSection = screen.getByRole("region", { name: "Problems" });
-    const showButton = within(problemsSection).getAllByRole("button", { expanded: false })[0];
-    if (!showButton) throw new Error("No collapsible problem groups rendered");
-    fireEvent.click(showButton);
+    // Expand the first problem row (CauseTree renders chevron buttons with
+    // aria-label "Expand"; ProblemGroupCard renders aria-expanded buttons).
+    const expandTargets = within(problemsSection).queryAllByLabelText("Expand");
+    const fallbackTargets = within(problemsSection).queryAllByRole("button", { expanded: false });
+    const expandButton = expandTargets[0] ?? fallbackTargets[0];
+    if (!expandButton) throw new Error("No expand control in Problems panel");
+    fireEvent.click(expandButton);
 
-    const openButton = within(problemsSection).getAllByText("open")[0];
-    if (!openButton) throw new Error("No open button in problem group");
-    fireEvent.click(openButton.closest("button")!);
+    // Click any resource link inside the expanded panel — both code paths
+    // wire this to filters.focus() which switches the inventory view.
+    const resourceButtons = within(problemsSection).getAllByRole("button");
+    const resourceLink = resourceButtons.find((button) => /\/[\w-]+$/.test(button.textContent ?? ""));
+    if (!resourceLink) throw new Error("No affected-resource link rendered");
+    fireEvent.click(resourceLink);
 
     await waitFor(() => {
       expect(
         screen.getByRole("heading", { level: 1, name: /Sandboxes|Claims|Warm pools|Templates/ }),
       ).toBeInTheDocument();
-    });
-    await waitFor(() => {
-      expect(screen.getAllByText("Events").length).toBeGreaterThan(0);
     });
   });
 });

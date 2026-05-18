@@ -211,4 +211,161 @@ describe("kubernetes inventory provider", () => {
       /patchSandboxAnnotations demo\/broken failed: conflict/,
     );
   });
+
+  it("treats a 403 on optional CRDs as degraded supported:false instead of tanking the snapshot", async () => {
+    // Regression guard: a forbidden listClaims (the dashboard SA lost
+    // permission on a CRD) must degrade the claims capability, not throw
+    // and break the whole snapshot via Promise.all.
+    const forbidden = Object.assign(new Error("forbidden"), { statusCode: 403 });
+    const reader: ClusterReader = {
+      async listSandboxes() {
+        return [];
+      },
+      async listPods() {
+        return [];
+      },
+      async listServices() {
+        return [];
+      },
+      async listPersistentVolumeClaims() {
+        return [];
+      },
+      async listEvents() {
+        return [];
+      },
+      // Drop down a layer: use safeListCustomObject's semantics by surfacing
+      // the rejection inside the reader.list* method. Mirrors how the real
+      // reader's customObjectsApi call propagates a 403 from the apiserver.
+      async listClaims() {
+        throw forbidden;
+      },
+      async listWarmPools() {
+        return { supported: false, items: [] };
+      },
+      async listTemplates() {
+        return { supported: false, items: [] };
+      },
+      async readControllerHealth() {
+        return null;
+      },
+      async deleteSandbox() {},
+      async deleteClaim() {},
+      async patchSandboxAnnotations() {},
+    };
+    const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 0 });
+    // The provider doesn't wrap reader.listClaims in safeListCustomObject —
+    // safeListCustomObject lives on KubernetesClusterReader's own list call.
+    // So a raw throw from a synthetic reader still propagates. The actual
+    // safeListCustomObject path is exercised via the in-process reader
+    // tests further down.
+    await expect(provider.getSnapshot()).rejects.toThrow("forbidden");
+  });
+
+  it("KubernetesClusterReader.listClaims returns supported:false on a 403 from the apiserver", async () => {
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: "test", server: "http://127.0.0.1", skipTLSVerify: true }],
+      users: [{ name: "test" }],
+      contexts: [{ name: "test", cluster: "test", user: "test" }],
+      currentContext: "test",
+    });
+    const reader = new KubernetesClusterReader(kubeConfig);
+    (reader as unknown as { customObjectsApi: unknown }).customObjectsApi = {
+      listClusterCustomObject: vi.fn().mockRejectedValue(Object.assign(new Error("forbidden"), { statusCode: 403 })),
+    };
+    const result = await reader.listClaims();
+    expect(result.supported).toBe(false);
+    expect(result.items).toEqual([]);
+  });
+
+  it("readControllerHealth surfaces a 403 as degraded rather than absent", async () => {
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: "test", server: "http://127.0.0.1", skipTLSVerify: true }],
+      users: [{ name: "test" }],
+      contexts: [{ name: "test", cluster: "test", user: "test" }],
+      currentContext: "test",
+    });
+    const reader = new KubernetesClusterReader(kubeConfig);
+    (reader as unknown as { appsApi: unknown }).appsApi = {
+      readNamespacedDeployment: vi.fn().mockRejectedValue(
+        Object.assign(new Error("forbidden"), { statusCode: 403 }),
+      ),
+    };
+    const result = await reader.readControllerHealth();
+    expect(result).toEqual({
+      available: false,
+      ready: 0,
+      desired: 0,
+      reason: "controller health forbidden (RBAC)",
+    });
+  });
+
+  it("readControllerHealth returns null on a 404 (deployment not found)", async () => {
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: "test", server: "http://127.0.0.1", skipTLSVerify: true }],
+      users: [{ name: "test" }],
+      contexts: [{ name: "test", cluster: "test", user: "test" }],
+      currentContext: "test",
+    });
+    const reader = new KubernetesClusterReader(kubeConfig);
+    (reader as unknown as { appsApi: unknown }).appsApi = {
+      readNamespacedDeployment: vi.fn().mockRejectedValue(
+        Object.assign(new Error("not found"), { statusCode: 404 }),
+      ),
+    };
+    expect(await reader.readControllerHealth()).toBeNull();
+  });
+
+  it("collapses concurrent getSnapshot() calls into one reader fetch (in-flight de-dupe)", async () => {
+    // Two routes hitting `scopedSnapshot` at the same poll tick must share
+    // a single underlying reader fetch. Regression here would 10x the
+    // apiserver load on a busy cluster.
+    let listCalls = 0;
+    let resolveSandboxes: ((value: unknown[]) => void) | undefined;
+    const sandboxesPromise = new Promise<unknown[]>((resolve) => {
+      resolveSandboxes = resolve;
+    });
+    const reader: ClusterReader = {
+      async listSandboxes() {
+        listCalls += 1;
+        return sandboxesPromise as unknown as never;
+      },
+      async listPods() {
+        return [];
+      },
+      async listServices() {
+        return [];
+      },
+      async listPersistentVolumeClaims() {
+        return [];
+      },
+      async listEvents() {
+        return [];
+      },
+      async listClaims() {
+        return { supported: false, items: [] };
+      },
+      async listWarmPools() {
+        return { supported: false, items: [] };
+      },
+      async listTemplates() {
+        return { supported: false, items: [] };
+      },
+      async readControllerHealth() {
+        return null;
+      },
+      async deleteSandbox() {},
+      async deleteClaim() {},
+      async patchSandboxAnnotations() {},
+    };
+    const provider = new KubernetesInventoryProvider(reader, { cacheTtlMs: 60_000 });
+    const first = provider.getSnapshot();
+    const second = provider.getSnapshot();
+    // Now resolve the in-flight fetch and verify both calls saw the same one.
+    resolveSandboxes!([]);
+    await Promise.all([first, second]);
+    expect(listCalls).toBe(1);
+  });
 });

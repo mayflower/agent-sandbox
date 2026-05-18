@@ -4,6 +4,7 @@ import type {
   ClaimLiveView,
   ControllerHealth,
   CostByDimension,
+  DashboardSnapshot,
   EventView,
   HistoryResolution,
   HistorySeries,
@@ -72,6 +73,9 @@ async function postJson<T>(path: string): Promise<T> {
 }
 
 export const api = {
+  /** One-shot bundled snapshot — preferred by the SPA over the per-view
+   *  routes since it collapses ~9 parallel polls into a single request. */
+  dashboard: () => requestJson<DashboardSnapshot>("/api/snapshot"),
   capabilities: () => requestJson<Capabilities>("/api/capabilities"),
   identity: () => requestJson<Identity>("/api/identity"),
   overview: () => requestJson<OverviewSnapshot>("/api/overview"),

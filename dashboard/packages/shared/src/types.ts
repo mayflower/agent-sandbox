@@ -300,6 +300,27 @@ export interface PhaseDatum {
   count: number;
 }
 
+/** Bundled response served by `/api/snapshot`. Lets the SPA replace ~9 parallel
+ *  polls with a single round-trip; the server builds this from one scoped
+ *  inventory fetch so it's strictly cheaper than the per-route calls it
+ *  replaces. Per-view endpoints (/api/sandboxes, /api/claims, ...) stay for
+ *  bookmarks and third-party scripts; the SPA prefers this. */
+export interface DashboardSnapshot {
+  /** ISO timestamp when this snapshot was assembled, for "Updated Xs ago". */
+  updatedAt: string;
+  identity: Identity;
+  capabilities: Capabilities;
+  controllerHealth: ControllerHealth | null;
+  overview: OverviewSnapshot;
+  sandboxes: SandboxLiveView[];
+  claims: ClaimLiveView[];
+  warmPools: WarmPoolLiveView[];
+  templates: TemplateLiveView[];
+  problems: ProblemView[];
+  problemDag: ProblemDag;
+  events: EventView[];
+}
+
 export interface OverviewSnapshot {
   totals: {
     totalSandboxes: number;

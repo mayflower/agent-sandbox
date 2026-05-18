@@ -1,4 +1,5 @@
-import { createFixtureSnapshot, DEFAULT_TENANCY_CONFIG } from "@agent-sandbox/dashboard-shared";
+import { DEFAULT_TENANCY_CONFIG } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../app.js";

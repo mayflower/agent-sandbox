@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  captureSnapshot,
-  createFixtureSnapshot,
-  diffSnapshots,
-} from "@agent-sandbox/dashboard-shared";
+import { captureSnapshot, diffSnapshots } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 
 describe("diffSnapshots", () => {
   it("detects added and removed sandboxes", () => {
