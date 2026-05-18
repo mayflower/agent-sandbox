@@ -1855,6 +1855,142 @@ func TestCreateSandboxPropagatesVolumeClaimTemplates(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxPropagatesPersistentStorage(t *testing.T) {
+	scheme := newScheme(t)
+	claimName := "persistent-claim"
+	storageClassName := "fast"
+	storageSize := resource.MustParse("12Gi")
+
+	claim := &extensionsv1beta1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: "default", UID: types.UID(claimName)},
+		Spec: extensionsv1beta1.SandboxClaimSpec{
+			WarmPoolRef: extensionsv1beta1.SandboxWarmPoolRef{Name: "persistent-warmpool"},
+		},
+	}
+
+	warmPool := &extensionsv1beta1.SandboxWarmPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent-warmpool", Namespace: "default"},
+		Spec:       extensionsv1beta1.SandboxWarmPoolSpec{TemplateRef: extensionsv1beta1.SandboxTemplateRef{Name: "persistent-template"}},
+	}
+
+	template := &extensionsv1beta1.SandboxTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent-template", Namespace: "default"},
+		Spec: extensionsv1beta1.SandboxTemplateSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "test"}},
+					},
+				},
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Size:             &storageSize,
+					StorageClassName: &storageClassName,
+					Mounts: []sandboxv1beta1.PersistentMount{
+						{Path: "/workspace"},
+						{Path: "/home/user", BootstrapFromImage: new(false)},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(claim, warmPool, template).
+		WithStatusSubresource(claim).Build()
+
+	reconciler := &SandboxClaimReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		Tracer:           asmetrics.NewNoOp(),
+		WarmSandboxQueue: queue.NewSimpleSandboxQueue(),
+	}
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: claimName, Namespace: "default"}}
+	_, err := reconciler.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	sandbox := &sandboxv1beta1.Sandbox{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: claimName, Namespace: "default"}, sandbox)
+	require.NoError(t, err)
+	require.Equal(t, template.Spec.PersistentStorage, sandbox.Spec.PersistentStorage)
+
+	template.Spec.PersistentStorage.Mounts[0].Path = "/changed"
+	require.Equal(t, "/workspace", sandbox.Spec.PersistentStorage.Mounts[0].Path)
+}
+
+func TestSandboxClaimAdoptionPreservesPersistentStorage(t *testing.T) {
+	scheme := newScheme(t)
+	storageSize := resource.MustParse("12Gi")
+
+	template := &extensionsv1beta1.SandboxTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent-template", Namespace: "default"},
+		Spec: extensionsv1beta1.SandboxTemplateSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "test"}},
+					},
+				},
+			},
+		},
+	}
+	warmPool := &extensionsv1beta1.SandboxWarmPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent-warmpool", Namespace: "default"},
+		Spec:       extensionsv1beta1.SandboxWarmPoolSpec{TemplateRef: extensionsv1beta1.SandboxTemplateRef{Name: template.Name}},
+	}
+	claim := &extensionsv1beta1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent-claim", Namespace: "default", UID: "persistent-claim-uid"},
+		Spec: extensionsv1beta1.SandboxClaimSpec{
+			WarmPoolRef: extensionsv1beta1.SandboxWarmPoolRef{Name: warmPool.Name},
+		},
+	}
+	adopted := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-persistent-sandbox",
+			Namespace: "default",
+			Labels: map[string]string{
+				warmPoolSandboxLabel:   sandboxcontrollers.NameHash("test-pool"),
+				sandboxTemplateRefHash: sandboxcontrollers.NameHash(template.Name),
+			},
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Size: &storageSize,
+					Mounts: []sandboxv1beta1.PersistentMount{
+						{Path: "/workspace"},
+					},
+				},
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "test"}},
+					},
+				},
+			},
+		},
+	}
+	expectedPersistentStorage := adopted.Spec.PersistentStorage.DeepCopy()
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(template, warmPool, claim, adopted).
+		Build()
+	reconciler := &SandboxClaimReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		Tracer:           asmetrics.NewNoOp(),
+		WarmSandboxQueue: queue.NewSimpleSandboxQueue(),
+	}
+
+	err := reconciler.completeAdoption(context.Background(), claim, adopted)
+	require.NoError(t, err)
+
+	updated := &sandboxv1beta1.Sandbox{}
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: adopted.Name, Namespace: adopted.Namespace}, updated)
+	require.NoError(t, err)
+	require.Equal(t, expectedPersistentStorage, updated.Spec.PersistentStorage)
+}
+
 func TestSandboxClaimSandboxAdoption(t *testing.T) {
 	template := &extensionsv1beta1.SandboxTemplate{
 		ObjectMeta: metav1.ObjectMeta{

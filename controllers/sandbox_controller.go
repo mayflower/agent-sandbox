@@ -20,14 +20,17 @@ import (
 	"fmt"
 	"hash/fnv"
 	"maps"
+	pathutil "path"
 	"reflect"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -54,7 +57,17 @@ const (
 	podSandboxNameHashIndex     = ".metadata.labels[" + sandboxLabel + "]"
 	sandboxControllerFieldOwner = "sandbox-controller"
 	immediateRequeueDelay       = time.Millisecond
+
+	// persistentStoragePVCNameSuffix is appended to the Sandbox name for the
+	// single PVC backing spec.persistentStorage.
+	persistentStoragePVCNameSuffix          = "-persist"
+	persistentStorageVolumeNameValue        = "agent-sandbox-persistent-storage"
+	persistentStorageBootstrapContainerName = "agent-sandbox-persistent-storage-bootstrap"
+	persistentStorageBootstrapMountPath     = "/mnt/persist"
+	defaultPersistentStorageSizeQuantity    = "20Gi"
 )
+
+var defaultPersistentStorageSize = resource.MustParse(defaultPersistentStorageSizeQuantity)
 
 // resourceOwnership represents the ownership state of a Kubernetes resource relative to a Sandbox.
 type resourceOwnership int
@@ -242,6 +255,10 @@ func (r *SandboxReconciler) reconcileChildResources(ctx context.Context, sandbox
 	err := r.reconcilePVCs(ctx, sandbox, nameHash)
 	allErrors = errors.Join(allErrors, err)
 
+	// Reconcile PVC backing persistentStorage.
+	err = r.reconcilePersistentStorage(ctx, sandbox, nameHash)
+	allErrors = errors.Join(allErrors, err)
+
 	// Reconcile Pod
 	pod, err := r.reconcilePod(ctx, sandbox, nameHash)
 	allErrors = errors.Join(allErrors, err)
@@ -261,15 +278,22 @@ func (r *SandboxReconciler) reconcileChildResources(ctx context.Context, sandbox
 	// compute and set overall conditions
 	conditions := r.computeConditions(sandbox, allErrors, svc, pod)
 	hasFinished := false
+	hasSuspended := false
 	for _, condition := range conditions {
 		meta.SetStatusCondition(&sandbox.Status.Conditions, condition)
 		if condition.Type == string(sandboxv1beta1.SandboxConditionFinished) {
 			hasFinished = true
 		}
+		if condition.Type == string(sandboxv1beta1.SandboxConditionSuspended) {
+			hasSuspended = true
+		}
 	}
 
 	if !hasFinished {
 		meta.RemoveStatusCondition(&sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionFinished))
+	}
+	if !hasSuspended {
+		meta.RemoveStatusCondition(&sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended))
 	}
 
 	return allErrors
@@ -929,6 +953,9 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *sandboxv1
 		})
 	}
 	mutatedSpec.Volumes = MergeVolumeClaimVolumes(mutatedSpec.Volumes, pvcVolumes)
+	if err := applyPersistentStorageToPodSpec(mutatedSpec, sandbox); err != nil {
+		return nil, err
+	}
 	pod = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        sandbox.Name,
@@ -1216,6 +1243,393 @@ func (r *SandboxReconciler) reconcilePVCs(ctx context.Context, sandbox *sandboxv
 	return nil
 }
 
+func persistentStoragePVCName(sandboxName string) string {
+	return sandboxName + persistentStoragePVCNameSuffix
+}
+
+func persistentStorageVolumeName() string {
+	return persistentStorageVolumeNameValue
+}
+
+func encodePersistentMountPath(path string) string {
+	path = pathutil.Clean(path)
+	path = strings.Trim(path, "/")
+	var encoded strings.Builder
+	for _, r := range path {
+		switch {
+		case r == '/':
+			encoded.WriteByte('-')
+		case r == '.' || r == '_' || r == '-':
+			encoded.WriteRune(r)
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			encoded.WriteRune(r)
+		default:
+			encoded.WriteByte('-')
+		}
+	}
+	return encoded.String()
+}
+
+func normalizePersistentMountPath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("persistentStorage mount path must not be empty")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "", fmt.Errorf("persistentStorage mount path %q must be absolute", path)
+	}
+	if hasParentPathSegment(path) {
+		return "", fmt.Errorf("persistentStorage mount path %q must not contain '..' path traversal", path)
+	}
+	normalized := pathutil.Clean(path)
+	if normalized == "." || normalized == "/" {
+		return "", fmt.Errorf("persistentStorage mount path %q normalizes to root, which is not allowed", path)
+	}
+	return normalized, nil
+}
+
+func hasParentPathSegment(path string) bool {
+	return slices.Contains(strings.Split(path, "/"), "..")
+}
+
+func isPathWithin(path, parent string) bool {
+	return path == parent || strings.HasPrefix(path, parent+"/")
+}
+
+func validatePersistentStorageMountPath(path string) (string, error) {
+	normalized, err := normalizePersistentMountPath(path)
+	if err != nil {
+		return "", err
+	}
+	for _, blockedPath := range []string{"/dev", "/proc", "/sys", "/run", "/var/run"} {
+		if isPathWithin(normalized, blockedPath) {
+			return "", fmt.Errorf("persistentStorage mount path %q is blocked because it is under %q", path, blockedPath)
+		}
+	}
+	if slices.Contains([]string{"/etc/passwd", "/etc/shadow"}, normalized) {
+		return "", fmt.Errorf("persistentStorage mount path %q is blocked", path)
+	}
+	if strings.HasPrefix(normalized, "/etc/ssh/") {
+		baseName := pathutil.Base(normalized)
+		if strings.Contains(baseName, "_host_key") {
+			return "", fmt.Errorf("persistentStorage mount path %q is blocked because host key paths under /etc/ssh are not allowed", path)
+		}
+	}
+	return normalized, nil
+}
+
+// validatePersistentStorageSpec performs controller-side validation for
+// persistentStorage until Sandbox and SandboxTemplate have admission webhooks.
+// TODO: Move this validation to admission once this repo wires validating
+// webhooks for Sandbox and SandboxTemplate.
+func validatePersistentStorageSpec(persistentStorage *sandboxv1beta1.PersistentStorageSpec) error {
+	if persistentStorage == nil {
+		return nil
+	}
+	seen := map[string]string{}
+	seenEncoded := map[string]string{}
+	for _, mount := range persistentStorage.Mounts {
+		normalized, err := validatePersistentStorageMountPath(mount.Path)
+		if err != nil {
+			return err
+		}
+		if previous, ok := seen[normalized]; ok {
+			return fmt.Errorf("persistentStorage mount path %q duplicates %q after normalization", mount.Path, previous)
+		}
+		for existingPath, existingOriginal := range seen {
+			switch {
+			case strings.HasPrefix(normalized, existingPath+"/"):
+				return fmt.Errorf("persistentStorage mount path %q is nested under %q", mount.Path, existingOriginal)
+			case strings.HasPrefix(existingPath, normalized+"/"):
+				return fmt.Errorf("persistentStorage mount path %q contains nested mount %q", mount.Path, existingOriginal)
+			}
+		}
+		encoded := encodePersistentMountPath(normalized)
+		if encoded == "" {
+			return fmt.Errorf("persistentStorage mount path %q encodes to an empty subPath", mount.Path)
+		}
+		if previous, ok := seenEncoded[encoded]; ok {
+			return fmt.Errorf("persistentStorage mount path %q encodes to subPath %q, which conflicts with %q", mount.Path, encoded, previous)
+		}
+		seen[normalized] = mount.Path
+		seenEncoded[encoded] = mount.Path
+	}
+	return nil
+}
+
+func buildPersistentStorageVolume(sandbox *sandboxv1beta1.Sandbox) corev1.Volume {
+	return corev1.Volume{
+		Name: persistentStorageVolumeName(),
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: persistentStoragePVCName(sandbox.Name),
+			},
+		},
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func buildPersistentStorageBootstrapScript(mounts []sandboxv1beta1.PersistentMount) (string, error) {
+	lines := []string{
+		"set -eu",
+		"",
+	}
+	for _, mount := range mounts {
+		if mount.BootstrapFromImage != nil && !*mount.BootstrapFromImage {
+			continue
+		}
+		normalizedPath, err := validatePersistentStorageMountPath(mount.Path)
+		if err != nil {
+			return "", err
+		}
+		encoded := encodePersistentMountPath(normalizedPath)
+		if encoded == "" {
+			return "", fmt.Errorf("persistentStorage mount path %q encodes to an empty subPath", mount.Path)
+		}
+		sourcePath := shellQuote(normalizedPath)
+		destPath := shellQuote(persistentStorageBootstrapMountPath + "/" + encoded)
+		lines = append(lines,
+			fmt.Sprintf("mkdir -p %s", destPath),
+			fmt.Sprintf("if [ -e %s ]; then", sourcePath),
+			fmt.Sprintf("  if [ ! -d %s ]; then", sourcePath),
+			fmt.Sprintf("    echo %s >&2", shellQuote("persistentStorage bootstrap source is not a directory: "+mount.Path)),
+			"    exit 1",
+			"  fi",
+			fmt.Sprintf("  if [ -z \"$(find %s -mindepth 1 -maxdepth 1 -print -quit)\" ]; then", destPath),
+			fmt.Sprintf("    cp -a %s/. %s/", sourcePath, destPath),
+			"  fi",
+			"fi",
+			"",
+		)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func applyPersistentStorageToPodSpec(spec *corev1.PodSpec, sandbox *sandboxv1beta1.Sandbox) error {
+	persistentStorage := sandbox.Spec.PersistentStorage
+	if persistentStorage == nil || len(persistentStorage.Mounts) == 0 {
+		return nil
+	}
+	if len(spec.Containers) == 0 {
+		return fmt.Errorf("persistentStorage requires at least one container in podTemplate")
+	}
+	if err := validatePersistentStorageSpec(persistentStorage); err != nil {
+		return err
+	}
+
+	for _, volume := range spec.Volumes {
+		if volume.Name == persistentStorageVolumeName() {
+			return fmt.Errorf("persistentStorage requires reserved volume name %q, but podTemplate already defines a volume with that name", persistentStorageVolumeName())
+		}
+	}
+	for _, container := range spec.InitContainers {
+		if container.Name == persistentStorageBootstrapContainerName {
+			return fmt.Errorf("persistentStorage requires reserved init container name %q, but podTemplate already defines an init container with that name", persistentStorageBootstrapContainerName)
+		}
+	}
+
+	for _, container := range spec.InitContainers {
+		for _, existingMount := range container.VolumeMounts {
+			if existingMount.Name == persistentStorageVolumeName() {
+				return fmt.Errorf("persistentStorage requires reserved volume mount name %q, but init container %q already defines a mount with that name", persistentStorageVolumeName(), container.Name)
+			}
+		}
+	}
+	for _, container := range spec.Containers {
+		for _, existingMount := range container.VolumeMounts {
+			if existingMount.Name == persistentStorageVolumeName() {
+				return fmt.Errorf("persistentStorage requires reserved volume mount name %q, but container %q already defines a mount with that name", persistentStorageVolumeName(), container.Name)
+			}
+		}
+	}
+	for _, container := range spec.EphemeralContainers {
+		for _, existingMount := range container.VolumeMounts {
+			if existingMount.Name == persistentStorageVolumeName() {
+				return fmt.Errorf("persistentStorage requires reserved volume mount name %q, but ephemeral container %q already defines a mount with that name", persistentStorageVolumeName(), container.Name)
+			}
+		}
+	}
+
+	targetContainer := &spec.Containers[0]
+	var volumeMounts []corev1.VolumeMount
+	bootstrap := false
+	for _, mount := range persistentStorage.Mounts {
+		normalizedPath, err := validatePersistentStorageMountPath(mount.Path)
+		if err != nil {
+			return err
+		}
+		encoded := encodePersistentMountPath(normalizedPath)
+		if encoded == "" {
+			return fmt.Errorf("persistentStorage mount path %q encodes to an empty subPath", mount.Path)
+		}
+		for _, existingMount := range targetContainer.VolumeMounts {
+			if pathutil.Clean(existingMount.MountPath) == normalizedPath {
+				return fmt.Errorf("persistentStorage mount path %q conflicts with existing volume mount in container %q", mount.Path, targetContainer.Name)
+			}
+		}
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      persistentStorageVolumeName(),
+			MountPath: normalizedPath,
+			SubPath:   encoded,
+		})
+		if mount.BootstrapFromImage == nil || *mount.BootstrapFromImage {
+			bootstrap = true
+		}
+	}
+
+	spec.Volumes = append(spec.Volumes, buildPersistentStorageVolume(sandbox))
+	targetContainer.VolumeMounts = append(targetContainer.VolumeMounts, volumeMounts...)
+
+	if bootstrap {
+		script, err := buildPersistentStorageBootstrapScript(persistentStorage.Mounts)
+		if err != nil {
+			return err
+		}
+		bootstrapContainer := corev1.Container{
+			Name:    persistentStorageBootstrapContainerName,
+			Image:   targetContainer.Image,
+			Command: []string{"sh", "-c"},
+			Args:    []string{script},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      persistentStorageVolumeName(),
+					MountPath: persistentStorageBootstrapMountPath,
+				},
+			},
+		}
+		spec.InitContainers = append([]corev1.Container{bootstrapContainer}, spec.InitContainers...)
+	}
+	return nil
+}
+
+func requestedPersistentStorageSize(spec *sandboxv1beta1.PersistentStorageSpec) resource.Quantity {
+	if spec != nil && spec.Size != nil {
+		return spec.Size.DeepCopy()
+	}
+	return defaultPersistentStorageSize.DeepCopy()
+}
+
+func validatePersistentStorageReservedNames(sandbox *sandboxv1beta1.Sandbox) error {
+	for _, volume := range sandbox.Spec.PodTemplate.Spec.Volumes {
+		if volume.Name == persistentStorageVolumeName() {
+			return fmt.Errorf("persistentStorage requires reserved volume name %q, but podTemplate already defines a volume with that name", persistentStorageVolumeName())
+		}
+	}
+	for _, container := range sandbox.Spec.PodTemplate.Spec.InitContainers {
+		if container.Name == persistentStorageBootstrapContainerName {
+			return fmt.Errorf("persistentStorage requires reserved init container name %q, but podTemplate already defines an init container with that name", persistentStorageBootstrapContainerName)
+		}
+	}
+	return nil
+}
+
+func (r *SandboxReconciler) reconcilePersistentStorage(ctx context.Context, sandbox *sandboxv1beta1.Sandbox, nameHash string) error {
+	logger := log.FromContext(ctx)
+
+	// Start a child span of ReconcileSandbox
+	ctx, end := r.Tracer.StartSpan(ctx, nil, "reconcilePersistentStorage", nil)
+	defer end()
+
+	persistentStorage := sandbox.Spec.PersistentStorage
+	if persistentStorage == nil || len(persistentStorage.Mounts) == 0 {
+		return nil
+	}
+	if err := validatePersistentStorageSpec(persistentStorage); err != nil {
+		return err
+	}
+	if err := validatePersistentStorageReservedNames(sandbox); err != nil {
+		return err
+	}
+
+	pvcName := persistentStoragePVCName(sandbox.Name)
+	requestedSize := requestedPersistentStorageSize(persistentStorage)
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: sandbox.Namespace}, pvc)
+	if err == nil {
+		ownership, controllerRef := checkOwnership(pvc, sandbox)
+		switch ownership {
+		case resourceOwnedByOther:
+			logger.Info("Refusing to use persistent storage PVC: PVC is owned by a different controller",
+				"PVC.Name", pvcName, "Sandbox.Name", sandbox.Name,
+				"Owner.Kind", controllerRef.Kind, "Owner.Name", controllerRef.Name, "Owner.UID", controllerRef.UID)
+			return fmt.Errorf("persistent storage PVC %q is owned by %s/%s (UID: %s), not by sandbox %q",
+				pvcName, controllerRef.Kind, controllerRef.Name, controllerRef.UID, sandbox.Name)
+
+		case resourceUnowned:
+			logger.Info("Adopting unowned persistent storage PVC", "PVC.Name", pvcName, "Sandbox.Name", sandbox.Name)
+			if err := ctrl.SetControllerReference(sandbox, pvc, r.Scheme); err != nil {
+				return fmt.Errorf("SetControllerReference for persistent storage PVC failed: %w", err)
+			}
+
+		case resourceOwnedBySandbox:
+			// Already owned by this sandbox.
+		}
+
+		updated := ownership == resourceUnowned
+		if pvc.Labels == nil {
+			pvc.Labels = make(map[string]string)
+			updated = true
+		}
+		if pvc.Labels[sandboxLabel] != nameHash {
+			pvc.Labels[sandboxLabel] = nameHash
+			updated = true
+		}
+
+		currentSize, hasCurrentSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		if !hasCurrentSize || requestedSize.Cmp(currentSize) > 0 {
+			if pvc.Spec.Resources.Requests == nil {
+				pvc.Spec.Resources.Requests = corev1.ResourceList{}
+			}
+			pvc.Spec.Resources.Requests[corev1.ResourceStorage] = requestedSize
+			updated = true
+		}
+
+		if updated {
+			if err := r.Update(ctx, pvc); err != nil {
+				return fmt.Errorf("failed to update persistent storage PVC: %w", err)
+			}
+		}
+		return nil
+	}
+
+	if !k8serrors.IsNotFound(err) {
+		logger.Error(err, "Failed to get persistent storage PVC")
+		return fmt.Errorf("persistent storage PVC Get Failed: %w", err)
+	}
+
+	pvcLabels := map[string]string{
+		sandboxLabel: nameHash,
+	}
+	pvc = &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName,
+			Namespace: sandbox.Namespace,
+			Labels:    pvcLabels,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			StorageClassName: persistentStorage.StorageClassName,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: requestedSize,
+				},
+			},
+		},
+	}
+	if err := ctrl.SetControllerReference(sandbox, pvc, r.Scheme); err != nil {
+		return fmt.Errorf("SetControllerReference for persistent storage PVC failed: %w", err)
+	}
+	logger.Info("Creating a new persistent storage PVC", "PVC.Namespace", sandbox.Namespace, "PVC.Name", pvcName)
+	if err := r.Create(ctx, pvc, client.FieldOwner(sandboxControllerFieldOwner)); err != nil {
+		logger.Error(err, "Failed to create persistent storage PVC", "PVC.Namespace", sandbox.Namespace, "PVC.Name", pvcName)
+		return err
+	}
+	return nil
+}
+
 // handles sandbox expiry by deleting child resources and the sandbox itself if needed.
 func (r *SandboxReconciler) handleSandboxExpiry(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (bool, error) {
 	logger := log.FromContext(ctx)
@@ -1366,6 +1780,7 @@ func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager, concurrentWorkers
 		For(&sandboxv1beta1.Sandbox{}).
 		Owns(&corev1.Pod{}, builder.WithPredicates(labelSelectorPredicate)).
 		Owns(&corev1.Service{}, builder.WithPredicates(labelSelectorPredicate)).
+		Owns(&corev1.PersistentVolumeClaim{}, builder.WithPredicates(labelSelectorPredicate)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: concurrentWorkers}).
 		Complete(r)
 }

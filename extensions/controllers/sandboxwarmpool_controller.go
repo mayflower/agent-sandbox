@@ -586,6 +586,7 @@ func (r *SandboxWarmPoolReconciler) compareVolumeClaimTemplates(template *extens
 func (r *SandboxWarmPoolReconciler) compareSandboxBlueprint(template *extensionsv1beta1.SandboxTemplate, actualSandboxSpec *sandboxv1beta1.SandboxBlueprint) bool {
 	return r.comparePodSpecs(template, &actualSandboxSpec.PodTemplate.Spec) &&
 		r.compareVolumeClaimTemplates(template, actualSandboxSpec.VolumeClaimTemplates) &&
+		equality.Semantic.DeepEqual(template.Spec.PersistentStorage, actualSandboxSpec.PersistentStorage) &&
 		equality.Semantic.DeepEqual(template.Spec.Service, actualSandboxSpec.Service)
 }
 

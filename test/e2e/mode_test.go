@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sandboxv1beta1 "sigs.k8s.io/agent-sandbox/api/v1beta1"
 	"sigs.k8s.io/agent-sandbox/test/e2e/framework"
@@ -102,4 +103,58 @@ func TestSandboxOperatingMode(t *testing.T) {
 	// Verify Pod is deleted but Service still exists
 	require.NoError(t, tc.WaitForObjectNotFound(t.Context(), pod))
 	tc.MustMatchPredicates(service, predicates.NotDeleted())
+}
+
+func TestSandboxSuspendWithPersistentStorage(t *testing.T) {
+	tc := framework.NewTestContext(t)
+
+	ns := &corev1.Namespace{}
+	ns.Name = fmt.Sprintf("sandbox-persistent-suspend-test-%d", time.Now().UnixNano())
+	require.NoError(t, tc.CreateWithCleanup(t.Context(), ns))
+
+	bootstrapFromImage := false
+	storageSize := resource.MustParse("1Gi")
+	sandboxObj := simpleSandbox(ns.Name)
+	sandboxObj.Spec.PersistentStorage = &sandboxv1beta1.PersistentStorageSpec{
+		Size: &storageSize,
+		Mounts: []sandboxv1beta1.PersistentMount{
+			{
+				Path:               "/workspace",
+				BootstrapFromImage: &bootstrapFromImage,
+			},
+		},
+	}
+	require.NoError(t, tc.CreateWithCleanup(t.Context(), sandboxObj))
+
+	tc.MustWaitForObject(sandboxObj, predicates.ReadyConditionIsTrue)
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	pvc.Name = sandboxObj.Name + "-persist"
+	pvc.Namespace = ns.Name
+	tc.MustExist(pvc)
+
+	pod := &corev1.Pod{}
+	pod.Name = sandboxObj.Name
+	pod.Namespace = ns.Name
+	tc.MustExist(pod)
+
+	framework.MustUpdateObject(tc.ClusterClient, sandboxObj, func(obj *sandboxv1beta1.Sandbox) {
+		obj.Spec.OperatingMode = sandboxv1beta1.SandboxOperatingModeSuspended
+	})
+
+	tc.MustWaitForObject(
+		sandboxObj,
+		predicates.ConditionReasonEquals(string(sandboxv1beta1.SandboxConditionReady), sandboxv1beta1.SandboxReasonSuspended),
+		predicates.ConditionReasonEquals(string(sandboxv1beta1.SandboxConditionSuspended), sandboxv1beta1.SandboxReasonSuspendedPodTerminated),
+	)
+	require.NoError(t, tc.WaitForObjectNotFound(t.Context(), pod))
+	tc.MustExist(pvc)
+
+	framework.MustUpdateObject(tc.ClusterClient, sandboxObj, func(obj *sandboxv1beta1.Sandbox) {
+		obj.Spec.OperatingMode = sandboxv1beta1.SandboxOperatingModeRunning
+	})
+
+	tc.MustWaitForObject(sandboxObj, predicates.ReadyConditionIsTrue)
+	tc.MustExist(pvc)
+	tc.MustExist(pod)
 }
