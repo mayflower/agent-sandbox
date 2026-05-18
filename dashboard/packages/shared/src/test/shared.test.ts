@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildOverviewSnapshot,
   classifyProblems,
-  createFixtureSnapshot,
   getTemplateRefName,
   groupProblems,
   mapEvents,
@@ -14,6 +13,7 @@ import {
   viewForKind,
 } from "../index.js";
 import type { RawSandbox, RawSandboxClaim, RawSandboxWarmPool } from "../index.js";
+import { createFixtureSnapshot } from "../fixtures.js";
 
 describe("shared dashboard domain helpers", () => {
   const now = new Date("2026-04-15T12:00:00Z");

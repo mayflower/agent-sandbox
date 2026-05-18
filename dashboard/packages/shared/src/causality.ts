@@ -68,6 +68,23 @@ function affected(problem: ProblemView): ProblemNode["affectedResources"][number
   };
 }
 
+/** Mutates `nodes` in place: clears any `parentId` chain that loops back on
+ *  itself. Exported for tests; callers should prefer {@link buildProblemDag}. */
+export function breakParentCycles(nodes: Map<ProblemId, ProblemNode>): void {
+  for (const node of nodes.values()) {
+    const visited = new Set<ProblemId>();
+    let cursor: ProblemId | undefined = node.parentId;
+    while (cursor) {
+      if (visited.has(cursor) || cursor === node.id) {
+        delete node.parentId;
+        break;
+      }
+      visited.add(cursor);
+      cursor = nodes.get(cursor)?.parentId;
+    }
+  }
+}
+
 function pickParent(child: ProblemView, problems: ProblemView[]): ProblemView | undefined {
   for (const rule of RULES) {
     if (rule.childKind !== child.kind) continue;
@@ -121,19 +138,10 @@ export function buildProblemDag(problems: ProblemView[]): ProblemDag {
     }
   }
 
-  // Break any accidental cycles defensively (rules above are acyclic by design).
-  for (const aggregate of aggregates.values()) {
-    const visited = new Set<ProblemId>();
-    let cursor: ProblemId | undefined = aggregate.node.parentId;
-    while (cursor) {
-      if (visited.has(cursor) || cursor === aggregate.node.id) {
-        delete aggregate.node.parentId;
-        break;
-      }
-      visited.add(cursor);
-      cursor = aggregates.get(cursor)?.node.parentId;
-    }
-  }
+  // Defensive cycle-break: the rules above are acyclic by design, but a
+  // future rule addition could introduce a loop. Strip any parentId whose
+  // chain reaches the node itself rather than rendering an infinite tree.
+  breakParentCycles(new Map(Array.from(aggregates, ([id, aggregate]) => [id, aggregate.node])));
 
   const byId = {} as Record<ProblemId, ProblemNode>;
   const roots: ProblemId[] = [];

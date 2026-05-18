@@ -5,7 +5,7 @@ import {
   type Identity,
 } from "@agent-sandbox/dashboard-shared";
 import { filterSnapshotForIdentity as serverFilter } from "../identity/filter-snapshot.js";
-import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 
 describe("buildIdentity", () => {
   it("returns synthetic operator when tenancy is disabled", () => {

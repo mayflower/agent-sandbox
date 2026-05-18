@@ -175,6 +175,28 @@ export function buildApp(options: BuildAppOptions) {
 
   app.get("/api/identity", async (request) => request.identity);
 
+  // Bundled snapshot: serves the SPA's first-paint and 5 s polling in one
+  // request instead of nine parallel ones. Built from a single
+  // scopedSnapshot call so it's strictly cheaper than the per-view routes.
+  app.get("/api/snapshot", async (request) => {
+    const snapshot = await scopedSnapshot(request.identity);
+    const problems = classifyProblems(snapshot);
+    return {
+      updatedAt: new Date().toISOString(),
+      identity: request.identity,
+      capabilities: snapshot.capabilities,
+      controllerHealth: snapshot.controllerHealth,
+      overview: buildOverviewSnapshot(snapshot),
+      sandboxes: normalizeSandboxes(snapshot),
+      claims: normalizeClaims(snapshot),
+      warmPools: normalizeWarmPools(snapshot),
+      templates: normalizeTemplates(snapshot),
+      problems,
+      problemDag: buildProblemDag(problems),
+      events: mapEvents(snapshot),
+    };
+  });
+
   app.get("/api/controller-health", async (_request, reply) => {
     const snapshot = await options.provider.getSnapshot();
     if (!snapshot.controllerHealth) {

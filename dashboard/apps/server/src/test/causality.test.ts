@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildProblemDag, type ProblemId, type ProblemView } from "@agent-sandbox/dashboard-shared";
+import {
+  breakParentCycles,
+  buildProblemDag,
+  type ProblemId,
+  type ProblemNode,
+  type ProblemView,
+} from "@agent-sandbox/dashboard-shared";
 
 function id(value: string): ProblemId {
   return value as ProblemId;
@@ -67,5 +73,69 @@ describe("buildProblemDag", () => {
         cursor = dag.byId[cursor]?.parentId;
       }
     }
+  });
+});
+
+describe("breakParentCycles", () => {
+  function node(rawId: string, parentId?: string): ProblemNode {
+    const base: ProblemNode = {
+      id: rawId as ProblemId,
+      kind: "runtime-missing",
+      severity: "warning",
+      summary: rawId,
+      affectedResources: [],
+    };
+    if (parentId !== undefined) base.parentId = parentId as ProblemId;
+    return base;
+  }
+
+  it("clears parentId when a node points to itself", () => {
+    const self = node("self", "self");
+    const map = new Map<ProblemId, ProblemNode>([[self.id, self]]);
+    breakParentCycles(map);
+    expect(self.parentId).toBeUndefined();
+  });
+
+  it("breaks 3-node parent cycles by clearing at least one pointer", () => {
+    // a -> b -> c -> a. The algorithm only needs to clear one parentId to
+    // make the graph acyclic; clearing all three would over-correct and
+    // discard valid cause/effect information once the loop is broken.
+    const a = node("a", "b");
+    const b = node("b", "c");
+    const c = node("c", "a");
+    const map = new Map<ProblemId, ProblemNode>([
+      [a.id, a],
+      [b.id, b],
+      [c.id, c],
+    ]);
+    breakParentCycles(map);
+    const remaining = [a, b, c].filter((n) => n.parentId !== undefined);
+    expect(remaining.length).toBeLessThan(3);
+    for (const start of [a, b, c]) {
+      const visited = new Set<ProblemId>();
+      let cursor = start.parentId;
+      while (cursor) {
+        expect(visited.has(cursor)).toBe(false);
+        expect(cursor).not.toBe(start.id);
+        visited.add(cursor);
+        cursor = map.get(cursor)?.parentId;
+      }
+    }
+  });
+
+  it("preserves valid parent chains that don't loop", () => {
+    // root <- middle <- leaf  — a regular tree, no cycle.
+    const root = node("root");
+    const middle = node("middle", "root");
+    const leaf = node("leaf", "middle");
+    const map = new Map<ProblemId, ProblemNode>([
+      [root.id, root],
+      [middle.id, middle],
+      [leaf.id, leaf],
+    ]);
+    breakParentCycles(map);
+    expect(root.parentId).toBeUndefined();
+    expect(middle.parentId).toBe("root");
+    expect(leaf.parentId).toBe("middle");
   });
 });

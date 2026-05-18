@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createFixtureSnapshot, type InventoryProvider } from "@agent-sandbox/dashboard-shared";
+import type { InventoryProvider } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 import { HistoryStore } from "../history/history-store.js";
 import { TimelineStore } from "../timeline/timeline-store.js";
 import { startPollLoop } from "../history/poll-loop.js";

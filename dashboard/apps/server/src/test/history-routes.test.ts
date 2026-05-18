@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import Fastify from "fastify";
-import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 import { HistoryStore } from "../history/history-store.js";
 import { registerHistoryRoutes } from "../history/routes.js";
 

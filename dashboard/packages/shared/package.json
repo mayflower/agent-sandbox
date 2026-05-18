@@ -6,8 +6,16 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./fixtures": {
+      "types": "./dist/fixtures.d.ts",
+      "import": "./dist/fixtures.js"
+    }
   },
+  "sideEffects": false,
   "scripts": {
     "build:workspace": "tsc -p tsconfig.json",
     "test:workspace": "vitest",

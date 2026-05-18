@@ -4,6 +4,8 @@ import {
   sandboxStartingP95,
   viewForKind,
   warmPoolFillRatio,
+  type ControllerHealth,
+  type DashboardSnapshot,
   type InventoryView,
   type MetricKey,
 } from "@agent-sandbox/dashboard-shared";
@@ -104,20 +106,46 @@ function AppContent() {
       setView("overview");
   }, [filters.view, view]);
 
-  const capabilitiesQuery = useQuery({ queryKey: ["capabilities"], queryFn: api.capabilities, refetchInterval: interval });
-  const identityQuery = useQuery({ queryKey: ["identity"], queryFn: api.identity, refetchInterval: interval });
-  const sandboxesQuery = useQuery({ queryKey: ["sandboxes"], queryFn: api.sandboxes, refetchInterval: interval });
-  const claimsQuery = useQuery({ queryKey: ["claims"], queryFn: api.claims, enabled: capabilitiesQuery.data?.claims === true, refetchInterval: interval });
-  const warmPoolsQuery = useQuery({ queryKey: ["warm-pools"], queryFn: api.warmPools, enabled: capabilitiesQuery.data?.warmPools === true, refetchInterval: interval });
-  const templatesQuery = useQuery({ queryKey: ["templates"], queryFn: api.templates, enabled: capabilitiesQuery.data?.templates === true, refetchInterval: interval });
-  const problemsQuery = useQuery({ queryKey: ["problems"], queryFn: api.problems, refetchInterval: interval });
-  const problemDagQuery = useQuery({ queryKey: ["problem-dag"], queryFn: api.problemDag, refetchInterval: interval });
-  const eventsQuery = useQuery({
-    queryKey: ["events"],
-    queryFn: () => api.events(),
-    enabled: capabilitiesQuery.data?.events === true,
+  // One bundled query replaces 9 per-view polls. Server builds it from a
+  // single scopedSnapshot call, so the client-side coalescing matches the
+  // server-side single-flight. Cost/history/controller-health stay separate:
+  // cost runs at 30 s, history at 15 s, controller-health is capability-gated.
+  const dashboardQuery = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: api.dashboard,
     refetchInterval: interval,
   });
+  // Derived per-section views via selectors — equivalent surface to the old
+  // useQuery hooks, but backed by one network request and one cache entry.
+  type DerivedQuery<T> = {
+    data: T | undefined;
+    isError: boolean;
+    error: unknown;
+    isFetching: boolean;
+    dataUpdatedAt: number;
+    isSuccess: boolean;
+    isLoading: boolean;
+  };
+  function derive<T>(pick: (snapshot: DashboardSnapshot) => T): DerivedQuery<T> {
+    return {
+      data: dashboardQuery.data ? pick(dashboardQuery.data) : undefined,
+      isError: dashboardQuery.isError,
+      error: dashboardQuery.error,
+      isFetching: dashboardQuery.isFetching,
+      dataUpdatedAt: dashboardQuery.dataUpdatedAt,
+      isSuccess: dashboardQuery.isSuccess,
+      isLoading: dashboardQuery.isLoading,
+    };
+  }
+  const capabilitiesQuery = derive((s) => s.capabilities);
+  const identityQuery = derive((s) => s.identity);
+  const sandboxesQuery = derive((s) => s.sandboxes);
+  const claimsQuery = derive((s) => s.claims);
+  const warmPoolsQuery = derive((s) => s.warmPools);
+  const templatesQuery = derive((s) => s.templates);
+  const problemsQuery = derive((s) => s.problems);
+  const problemDagQuery = derive((s) => s.problemDag);
+  const eventsQuery = derive((s) => s.events);
   const historyQuery = useQuery({
     queryKey: ["history-metrics"],
     queryFn: () => api.historyMetrics({ res: "15s" }),
@@ -128,21 +156,13 @@ function AppContent() {
     queryFn: api.costSnapshot,
     refetchInterval: 30_000,
   });
-  const controllerHealthQuery = useQuery({
-    queryKey: ["controller-health"],
-    queryFn: api.controllerHealth,
-    enabled: capabilitiesQuery.data?.controllerHealth === true,
-    refetchInterval: interval,
-  });
+  // Controller health rides on /api/snapshot now so it stays in sync with
+  // the rest of the cluster view; the dedicated /api/controller-health
+  // endpoint is still served for older bookmarks but the SPA doesn't poll it.
+  const controllerHealthQuery: DerivedQuery<ControllerHealth | null> = derive((s) => s.controllerHealth);
   type QueryErrorEntry = { name: string; error: unknown };
   const queryErrors = ([
-    capabilitiesQuery.isError ? { name: "capabilities", error: capabilitiesQuery.error } : null,
-    sandboxesQuery.isError ? { name: "sandboxes", error: sandboxesQuery.error } : null,
-    problemsQuery.isError ? { name: "problems", error: problemsQuery.error } : null,
-    capabilitiesQuery.data?.claims === true && claimsQuery.isError ? { name: "claims", error: claimsQuery.error } : null,
-    capabilitiesQuery.data?.warmPools === true && warmPoolsQuery.isError ? { name: "warm-pools", error: warmPoolsQuery.error } : null,
-    capabilitiesQuery.data?.templates === true && templatesQuery.isError ? { name: "templates", error: templatesQuery.error } : null,
-    capabilitiesQuery.data?.events === true && eventsQuery.isError ? { name: "events", error: eventsQuery.error } : null,
+    dashboardQuery.isError ? { name: "dashboard", error: dashboardQuery.error } : null,
   ] as Array<QueryErrorEntry | null>).filter((entry): entry is QueryErrorEntry => entry !== null);
 
   const namespaces = useMemo(() => {

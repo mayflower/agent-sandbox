@@ -63,7 +63,12 @@ async function safeListCustomObject<T>(
       items: asItems<T>(response),
     };
   } catch (error) {
-    if (httpStatusCodeOf(error) === 404) {
+    const status = httpStatusCodeOf(error);
+    // 404 = CRD isn't installed on the cluster (older controller). 403 = the
+    // dashboard's ServiceAccount lacks list/watch on the CRD. Both degrade
+    // the dashboard to "this kind isn't visible" rather than tanking the
+    // whole snapshot via Promise.all — the core sandbox view keeps working.
+    if (status === 404 || status === 403) {
       return {
         supported: false,
         items: [],

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  createFixtureSnapshot,
-  type InventorySnapshot,
-  type RawSandbox,
-} from "@agent-sandbox/dashboard-shared";
+import type { InventorySnapshot, RawSandbox } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 import { SnapshotDiffEventSource } from "../timeline/event-sources/snapshot-diff.js";
 
 function withRuntimeBroken(snapshot: InventorySnapshot, sandboxName: string): InventorySnapshot {

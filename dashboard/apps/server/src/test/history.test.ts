@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared";
+import { createFixtureSnapshot } from "@agent-sandbox/dashboard-shared/fixtures";
 import { HistoryStore, FAST_BUFFER_CAPACITY, FULL_SNAPSHOT_CAPACITY } from "../history/history-store.js";
 
 describe("HistoryStore", () => {
