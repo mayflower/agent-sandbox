@@ -1,0 +1,17 @@
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: persistent-storage-template
+  namespace: default
+spec:
+  persistentStorage:
+    size: 30Gi
+    mounts:
+    - path: /root
+    - path: /usr/local
+  podTemplate:
+    spec:
+      containers:
+      - name: shell
+        image: ubuntu:24.04
+        command: ["/bin/sh", "-c", "sleep infinity"]

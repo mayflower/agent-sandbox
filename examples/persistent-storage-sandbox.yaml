@@ -1,0 +1,19 @@
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: persistent-storage-sandbox
+  namespace: default
+spec:
+  persistentStorage:
+    size: 20Gi
+    mounts:
+    - path: /workspace
+      bootstrapFromImage: false
+    - path: /root
+      bootstrapFromImage: true
+  podTemplate:
+    spec:
+      containers:
+      - name: shell
+        image: ubuntu:24.04
+        command: ["/bin/sh", "-c", "sleep infinity"]

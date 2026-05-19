@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -3318,6 +3319,846 @@ func TestReconcilePVCs(t *testing.T) {
 			require.Equal(t, sandboxUID, ownerRef.UID, "PVC controller reference UID should match sandbox UID")
 		})
 	}
+}
+
+func TestReconcilePersistentStorage(t *testing.T) {
+	sandboxName := "test-sandbox"
+	sandboxNs := "test-ns"
+	sandboxUID := types.UID("sandbox-uid-123")
+	otherUID := types.UID("other-uid-456")
+	pvcName := persistentStoragePVCName(sandboxName)
+	storageClassName := "fast-storage"
+
+	sandboxWithPersistentStorage := func(size *resource.Quantity) *sandboxv1beta1.Sandbox {
+		return &sandboxv1beta1.Sandbox{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sandboxName,
+				Namespace: sandboxNs,
+				UID:       sandboxUID,
+			},
+			Spec: sandboxv1beta1.SandboxSpec{
+				SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+					PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+						Size:             size,
+						StorageClassName: &storageClassName,
+						Mounts: []sandboxv1beta1.PersistentMount{
+							{Path: "/workspace"},
+						},
+					},
+				},
+			},
+		}
+	}
+	ownedPVC := func(size string) *corev1.PersistentVolumeClaim {
+		return &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pvcName,
+				Namespace: sandboxNs,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         "agents.x-k8s.io/v1alpha1",
+						Kind:               "Sandbox",
+						Name:               sandboxName,
+						UID:                sandboxUID,
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse(size),
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("does nothing when persistentStorage is nil", func(t *testing.T) {
+		sandbox := &sandboxv1beta1.Sandbox{
+			ObjectMeta: metav1.ObjectMeta{Name: sandboxName, Namespace: sandboxNs, UID: sandboxUID},
+		}
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		require.NoError(t, r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName)))
+
+		pvcList := &corev1.PersistentVolumeClaimList{}
+		require.NoError(t, r.List(t.Context(), pvcList, client.InNamespace(sandboxNs)))
+		require.Empty(t, pvcList.Items)
+	})
+
+	t.Run("does nothing when persistentStorage has no mounts", func(t *testing.T) {
+		sandbox := sandboxWithPersistentStorage(nil)
+		sandbox.Spec.PersistentStorage.Mounts = nil
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		require.NoError(t, r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName)))
+
+		pvcList := &corev1.PersistentVolumeClaimList{}
+		require.NoError(t, r.List(t.Context(), pvcList, client.InNamespace(sandboxNs)))
+		require.Empty(t, pvcList.Items)
+	})
+
+	t.Run("creates PVC with default size", func(t *testing.T) {
+		sandbox := sandboxWithPersistentStorage(nil)
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		require.NoError(t, r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName)))
+
+		livePVC := &corev1.PersistentVolumeClaim{}
+		require.NoError(t, r.Get(t.Context(), types.NamespacedName{Name: pvcName, Namespace: sandboxNs}, livePVC))
+		require.Equal(t, map[string]string{sandboxLabel: NameHash(sandboxName)}, livePVC.Labels)
+		require.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, livePVC.Spec.AccessModes)
+		require.Equal(t, storageClassName, *livePVC.Spec.StorageClassName)
+		liveSize := livePVC.Spec.Resources.Requests[corev1.ResourceStorage]
+		require.Equal(t, defaultPersistentStorageSizeQuantity, liveSize.String())
+		ownerRef := metav1.GetControllerOf(livePVC)
+		require.NotNil(t, ownerRef)
+		require.Equal(t, sandboxUID, ownerRef.UID)
+	})
+
+	t.Run("creates PVC with requested size", func(t *testing.T) {
+		requestedSize := resource.MustParse("7Gi")
+		sandbox := sandboxWithPersistentStorage(&requestedSize)
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		require.NoError(t, r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName)))
+
+		livePVC := &corev1.PersistentVolumeClaim{}
+		require.NoError(t, r.Get(t.Context(), types.NamespacedName{Name: pvcName, Namespace: sandboxNs}, livePVC))
+		liveSize := livePVC.Spec.Resources.Requests[corev1.ResourceStorage]
+		require.Equal(t, requestedSize.String(), liveSize.String())
+	})
+
+	t.Run("adopts unowned PVC and applies label", func(t *testing.T) {
+		sandbox := sandboxWithPersistentStorage(nil)
+		existingPVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pvcName,
+				Namespace: sandboxNs,
+			},
+		}
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox, existingPVC),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		require.NoError(t, r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName)))
+
+		livePVC := &corev1.PersistentVolumeClaim{}
+		require.NoError(t, r.Get(t.Context(), types.NamespacedName{Name: pvcName, Namespace: sandboxNs}, livePVC))
+		ownerRef := metav1.GetControllerOf(livePVC)
+		require.NotNil(t, ownerRef)
+		require.Equal(t, sandboxUID, ownerRef.UID)
+		require.Equal(t, NameHash(sandboxName), livePVC.Labels[sandboxLabel])
+	})
+
+	t.Run("refuses PVC owned by another controller", func(t *testing.T) {
+		sandbox := sandboxWithPersistentStorage(nil)
+		existingPVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pvcName,
+				Namespace: sandboxNs,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         "apps/v1",
+						Kind:               "Deployment",
+						Name:               "other-controller",
+						UID:                otherUID,
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+		}
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox, existingPVC),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		err := r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "is owned by")
+	})
+
+	t.Run("patches size upward", func(t *testing.T) {
+		requestedSize := resource.MustParse("5Gi")
+		sandbox := sandboxWithPersistentStorage(&requestedSize)
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox, ownedPVC("1Gi")),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		require.NoError(t, r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName)))
+
+		livePVC := &corev1.PersistentVolumeClaim{}
+		require.NoError(t, r.Get(t.Context(), types.NamespacedName{Name: pvcName, Namespace: sandboxNs}, livePVC))
+		liveSize := livePVC.Spec.Resources.Requests[corev1.ResourceStorage]
+		require.Equal(t, "5Gi", liveSize.String())
+	})
+
+	t.Run("does not shrink existing PVC", func(t *testing.T) {
+		requestedSize := resource.MustParse("1Gi")
+		sandbox := sandboxWithPersistentStorage(&requestedSize)
+		r := SandboxReconciler{
+			Client: newFakeClient(sandbox, ownedPVC("5Gi")),
+			Scheme: Scheme,
+			Tracer: asmetrics.NewNoOp(),
+		}
+
+		require.NoError(t, r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandboxName)))
+
+		livePVC := &corev1.PersistentVolumeClaim{}
+		require.NoError(t, r.Get(t.Context(), types.NamespacedName{Name: pvcName, Namespace: sandboxNs}, livePVC))
+		liveSize := livePVC.Spec.Resources.Requests[corev1.ResourceStorage]
+		require.Equal(t, "5Gi", liveSize.String())
+	})
+}
+
+func TestReconcilePersistentStorageReservedNameCollisions(t *testing.T) {
+	baseSandbox := func() *sandboxv1beta1.Sandbox {
+		return &sandboxv1beta1.Sandbox{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sandbox",
+				Namespace: "test-ns",
+				UID:       types.UID("sandbox-uid-123"),
+			},
+			Spec: sandboxv1beta1.SandboxSpec{
+				SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+					PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+						Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+					},
+				},
+			},
+		}
+	}
+
+	testCases := []struct {
+		name        string
+		mutate      func(*sandboxv1beta1.Sandbox)
+		errContains string
+	}{
+		{
+			name: "reserved volume name",
+			mutate: func(sandbox *sandboxv1beta1.Sandbox) {
+				sandbox.Spec.PodTemplate.Spec.Volumes = []corev1.Volume{{Name: persistentStorageVolumeName()}}
+			},
+			errContains: "reserved volume name",
+		},
+		{
+			name: "reserved init container name",
+			mutate: func(sandbox *sandboxv1beta1.Sandbox) {
+				sandbox.Spec.PodTemplate.Spec.InitContainers = []corev1.Container{{Name: persistentStorageBootstrapContainerName}}
+			},
+			errContains: "reserved init container name",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sandbox := baseSandbox()
+			tc.mutate(sandbox)
+			r := SandboxReconciler{
+				Client: newFakeClient(sandbox),
+				Scheme: Scheme,
+				Tracer: asmetrics.NewNoOp(),
+			}
+
+			err := r.reconcilePersistentStorage(t.Context(), sandbox, NameHash(sandbox.Name))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.errContains)
+		})
+	}
+}
+
+func TestEncodePersistentMountPath(t *testing.T) {
+	testCases := []struct {
+		path string
+		want string
+	}{
+		{path: "/root", want: "root"},
+		{path: "/usr/local", want: "usr-local"},
+		{path: "/", want: ""},
+		{path: "/var/lib/cache.v1", want: "var-lib-cache.v1"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.path, func(t *testing.T) {
+			require.Equal(t, tc.want, encodePersistentMountPath(tc.path))
+		})
+	}
+}
+
+func TestValidatePersistentStorageSpec(t *testing.T) {
+	bootstrapFalse := false
+
+	validPaths := []string{"/root", "/home/user", "/usr/local", "/workspace", "/var/lib/dpkg"}
+	for _, path := range validPaths {
+		t.Run("valid "+path, func(t *testing.T) {
+			err := validatePersistentStorageSpec(&sandboxv1beta1.PersistentStorageSpec{
+				Mounts: []sandboxv1beta1.PersistentMount{{Path: path}},
+			})
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("nil bootstrap is accepted", func(t *testing.T) {
+		err := validatePersistentStorageSpec(&sandboxv1beta1.PersistentStorageSpec{
+			Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("explicit bootstrap false is accepted", func(t *testing.T) {
+		err := validatePersistentStorageSpec(&sandboxv1beta1.PersistentStorageSpec{
+			Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace", BootstrapFromImage: &bootstrapFalse}},
+		})
+		require.NoError(t, err)
+	})
+
+	testCases := []struct {
+		name        string
+		mounts      []sandboxv1beta1.PersistentMount
+		errContains string
+	}{
+		{
+			name:        "empty path",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: ""}},
+			errContains: "must not be empty",
+		},
+		{
+			name:        "relative path",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "workspace"}},
+			errContains: "must be absolute",
+		},
+		{
+			name:        "root path",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/"}},
+			errContains: "normalizes to root",
+		},
+		{
+			name:        "trailing slash root path",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "///"}},
+			errContains: "normalizes to root",
+		},
+		{
+			name:        "path traversal",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/workspace/../root"}},
+			errContains: "must not contain '..'",
+		},
+		{
+			name: "duplicate paths",
+			mounts: []sandboxv1beta1.PersistentMount{
+				{Path: "/root"},
+				{Path: "/root"},
+			},
+			errContains: "duplicates",
+		},
+		{
+			name: "duplicate normalized paths",
+			mounts: []sandboxv1beta1.PersistentMount{
+				{Path: "/root"},
+				{Path: "/root/"},
+			},
+			errContains: "duplicates",
+		},
+		{
+			name: "nested paths",
+			mounts: []sandboxv1beta1.PersistentMount{
+				{Path: "/root"},
+				{Path: "/root/.cache"},
+			},
+			errContains: "nested under",
+		},
+		{
+			name: "nested paths reverse order",
+			mounts: []sandboxv1beta1.PersistentMount{
+				{Path: "/root/.cache"},
+				{Path: "/root"},
+			},
+			errContains: "contains nested mount",
+		},
+		{
+			name: "encoded subPath collision",
+			mounts: []sandboxv1beta1.PersistentMount{
+				{Path: "/home/user"},
+				{Path: "/home-user"},
+			},
+			errContains: "encodes to subPath",
+		},
+		{
+			name:        "blocked dev",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/dev"}},
+			errContains: `"/dev"`,
+		},
+		{
+			name:        "blocked dev child",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/dev/null"}},
+			errContains: `"/dev"`,
+		},
+		{
+			name:        "blocked proc",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/proc"}},
+			errContains: `"/proc"`,
+		},
+		{
+			name:        "blocked sys",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/sys"}},
+			errContains: `"/sys"`,
+		},
+		{
+			name:        "blocked run",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/run"}},
+			errContains: `"/run"`,
+		},
+		{
+			name:        "blocked var run",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/var/run"}},
+			errContains: `"/var/run"`,
+		},
+		{
+			name:        "blocked passwd",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/etc/passwd"}},
+			errContains: "/etc/passwd",
+		},
+		{
+			name:        "blocked shadow",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/etc/shadow"}},
+			errContains: "/etc/shadow",
+		},
+		{
+			name:        "blocked ssh host key",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/etc/ssh/ssh_host_key"}},
+			errContains: "host key",
+		},
+		{
+			name:        "blocked ssh host key suffix",
+			mounts:      []sandboxv1beta1.PersistentMount{{Path: "/etc/ssh/ssh_host_key.pub"}},
+			errContains: "host key",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePersistentStorageSpec(&sandboxv1beta1.PersistentStorageSpec{Mounts: tc.mounts})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.errContains)
+			for _, mount := range tc.mounts {
+				if mount.Path != "" {
+					require.Contains(t, err.Error(), mount.Path)
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestApplyPersistentStorageToPodSpec(t *testing.T) {
+	bootstrapFalse := false
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-sandbox",
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{
+						{Path: "/workspace"},
+						{Path: "/cache", BootstrapFromImage: &bootstrapFalse},
+						{Path: "/usr/local"},
+					},
+				},
+			},
+		},
+	}
+	spec := &corev1.PodSpec{
+		InitContainers: []corev1.Container{
+			{Name: "user-init", Image: "init-image"},
+		},
+		Containers: []corev1.Container{
+			{Name: "main", Image: "busybox:1.36"},
+			{Name: "sidecar", Image: "sidecar:latest"},
+		},
+	}
+
+	require.NoError(t, applyPersistentStorageToPodSpec(spec, sandbox))
+
+	require.Len(t, spec.Volumes, 1)
+	require.Equal(t, persistentStorageVolumeName(), spec.Volumes[0].Name)
+	require.NotNil(t, spec.Volumes[0].PersistentVolumeClaim)
+	require.Equal(t, persistentStoragePVCName(sandbox.Name), spec.Volumes[0].PersistentVolumeClaim.ClaimName)
+
+	require.Len(t, spec.Containers[0].VolumeMounts, 3)
+	require.Equal(t, corev1.VolumeMount{Name: persistentStorageVolumeName(), MountPath: "/workspace", SubPath: "workspace"}, spec.Containers[0].VolumeMounts[0])
+	require.Equal(t, corev1.VolumeMount{Name: persistentStorageVolumeName(), MountPath: "/cache", SubPath: "cache"}, spec.Containers[0].VolumeMounts[1])
+	require.Equal(t, corev1.VolumeMount{Name: persistentStorageVolumeName(), MountPath: "/usr/local", SubPath: "usr-local"}, spec.Containers[0].VolumeMounts[2])
+	require.Empty(t, spec.Containers[1].VolumeMounts)
+
+	require.Len(t, spec.InitContainers, 2)
+	require.Equal(t, persistentStorageBootstrapContainerName, spec.InitContainers[0].Name)
+	require.Equal(t, "busybox:1.36", spec.InitContainers[0].Image)
+	require.Equal(t, []string{"sh", "-c"}, spec.InitContainers[0].Command)
+	require.Equal(t, "user-init", spec.InitContainers[1].Name)
+	require.Len(t, spec.InitContainers[0].VolumeMounts, 1)
+	require.Equal(t, corev1.VolumeMount{Name: persistentStorageVolumeName(), MountPath: persistentStorageBootstrapMountPath}, spec.InitContainers[0].VolumeMounts[0])
+
+	script := spec.InitContainers[0].Args[0]
+	require.Contains(t, script, "mkdir -p '/mnt/persist/workspace'")
+	require.Contains(t, script, "cp -a '/workspace'/. '/mnt/persist/workspace'/")
+	require.Contains(t, script, "mkdir -p '/mnt/persist/usr-local'")
+	require.NotContains(t, script, "/mnt/persist/cache")
+}
+
+func TestApplyPersistentStorageToPodSpecAllBootstrapDisabled(t *testing.T) {
+	bootstrapFalse := false
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-sandbox"},
+		Spec: sandboxv1beta1.SandboxSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{
+						{Path: "/cache", BootstrapFromImage: &bootstrapFalse},
+					},
+				},
+			},
+		},
+	}
+	spec := &corev1.PodSpec{
+		InitContainers: []corev1.Container{{Name: "user-init"}},
+		Containers:     []corev1.Container{{Name: "main", Image: "busybox"}},
+	}
+
+	require.NoError(t, applyPersistentStorageToPodSpec(spec, sandbox))
+
+	require.Len(t, spec.Volumes, 1)
+	require.Len(t, spec.Containers[0].VolumeMounts, 1)
+	require.Len(t, spec.InitContainers, 1)
+	require.Equal(t, "user-init", spec.InitContainers[0].Name)
+}
+
+func TestApplyPersistentStorageToPodSpecCollisions(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-sandbox"},
+		Spec: sandboxv1beta1.SandboxSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+				},
+			},
+		},
+	}
+
+	testCases := []struct {
+		name        string
+		spec        *corev1.PodSpec
+		mounts      []sandboxv1beta1.PersistentMount
+		errContains string
+	}{
+		{
+			name: "user volume name",
+			spec: &corev1.PodSpec{
+				Volumes:    []corev1.Volume{{Name: persistentStorageVolumeName()}},
+				Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+			},
+			errContains: "reserved volume name",
+		},
+		{
+			name: "mount path",
+			spec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:         "main",
+						Image:        "busybox",
+						VolumeMounts: []corev1.VolumeMount{{Name: "user-volume", MountPath: "/workspace"}},
+					},
+				},
+			},
+			errContains: "mount path",
+		},
+		{
+			name: "volume mount name",
+			spec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:         "main",
+						Image:        "busybox",
+						VolumeMounts: []corev1.VolumeMount{{Name: persistentStorageVolumeName(), MountPath: "/other"}},
+					},
+				},
+			},
+			errContains: "reserved volume mount name",
+		},
+		{
+			name: "sidecar volume mount name",
+			spec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "main", Image: "busybox"},
+					{
+						Name:         "sidecar",
+						Image:        "busybox",
+						VolumeMounts: []corev1.VolumeMount{{Name: persistentStorageVolumeName(), MountPath: "/other"}},
+					},
+				},
+			},
+			errContains: "sidecar",
+		},
+		{
+			name: "init container volume mount name",
+			spec: &corev1.PodSpec{
+				InitContainers: []corev1.Container{
+					{
+						Name:         "user-init",
+						Image:        "busybox",
+						VolumeMounts: []corev1.VolumeMount{{Name: persistentStorageVolumeName(), MountPath: "/other"}},
+					},
+				},
+				Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+			},
+			errContains: "init container",
+		},
+		{
+			name: "encoded subPath collision",
+			spec: &corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+			},
+			mounts: []sandboxv1beta1.PersistentMount{
+				{Path: "/home/user"},
+				{Path: "/home-user"},
+			},
+			errContains: "encodes to subPath",
+		},
+		{
+			name: "empty encoded path",
+			spec: &corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+			},
+			errContains: "normalizes to root",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			testSandbox := sandbox.DeepCopy()
+			if tc.mounts != nil {
+				testSandbox.Spec.PersistentStorage.Mounts = tc.mounts
+			}
+			if strings.Contains(tc.errContains, "normalizes to root") {
+				testSandbox.Spec.PersistentStorage.Mounts = []sandboxv1beta1.PersistentMount{{Path: "/"}}
+			}
+
+			err := applyPersistentStorageToPodSpec(tc.spec, testSandbox)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.errContains)
+		})
+	}
+}
+
+func TestReconcilePodWithPersistentStorageAndVolumeClaimTemplates(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sandbox",
+			Namespace: "test-ns",
+			UID:       types.UID("sandbox-uid-123"),
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+					},
+				},
+				VolumeClaimTemplates: []sandboxv1beta1.PersistentVolumeClaimTemplate{
+					{
+						EmbeddedObjectMetadata: sandboxv1beta1.EmbeddedObjectMetadata{Name: "data"},
+						Spec: corev1.PersistentVolumeClaimSpec{
+							AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+							Resources: corev1.VolumeResourceRequirements{
+								Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+							},
+						},
+					},
+				},
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+				},
+			},
+		},
+	}
+	r := SandboxReconciler{
+		Client: newFakeClient(sandbox),
+		Scheme: Scheme,
+		Tracer: asmetrics.NewNoOp(),
+	}
+
+	pod, err := r.reconcilePod(t.Context(), sandbox, NameHash(sandbox.Name))
+	require.NoError(t, err)
+	require.NotNil(t, pod)
+
+	volumesByName := map[string]corev1.Volume{}
+	for _, volume := range pod.Spec.Volumes {
+		volumesByName[volume.Name] = volume
+	}
+	require.Contains(t, volumesByName, "data")
+	require.Equal(t, "data-test-sandbox", volumesByName["data"].PersistentVolumeClaim.ClaimName)
+	require.Contains(t, volumesByName, persistentStorageVolumeName())
+	require.Equal(t, persistentStoragePVCName(sandbox.Name), volumesByName[persistentStorageVolumeName()].PersistentVolumeClaim.ClaimName)
+
+	require.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
+		Name:      persistentStorageVolumeName(),
+		MountPath: "/workspace",
+		SubPath:   "workspace",
+	})
+	require.Len(t, pod.Spec.InitContainers, 1)
+	require.Equal(t, persistentStorageBootstrapContainerName, pod.Spec.InitContainers[0].Name)
+}
+
+func TestReconcileChildResourcesPersistentStorageErrorSetsReadyCondition(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-sandbox",
+			Namespace:  "test-ns",
+			UID:        types.UID("sandbox-uid-123"),
+			Generation: 3,
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+				},
+			},
+		},
+	}
+	existingPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      persistentStoragePVCName(sandbox.Name),
+			Namespace: sandbox.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "apps/v1",
+					Kind:               "Deployment",
+					Name:               "other-controller",
+					UID:                types.UID("other-uid-456"),
+					Controller:         new(true),
+					BlockOwnerDeletion: new(true),
+				},
+			},
+		},
+	}
+	r := SandboxReconciler{
+		Client: newFakeClient(sandbox, existingPVC),
+		Scheme: Scheme,
+		Tracer: asmetrics.NewNoOp(),
+	}
+
+	err := r.reconcileChildResources(t.Context(), sandbox)
+	require.Error(t, err)
+
+	ready := meta.FindStatusCondition(sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionReady))
+	require.NotNil(t, ready)
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, "ReconcilerError", ready.Reason)
+	require.Contains(t, ready.Message, "persistent storage PVC")
+}
+
+func TestReconcileChildResourcesSuspendWithPersistentStorageCreatesPVCNoPod(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-sandbox",
+			Namespace:  "test-ns",
+			UID:        types.UID("sandbox-uid-123"),
+			Generation: 3,
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeSuspended,
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+				},
+			},
+		},
+	}
+	r := SandboxReconciler{
+		Client: newFakeClient(sandbox),
+		Scheme: Scheme,
+		Tracer: asmetrics.NewNoOp(),
+	}
+
+	require.NoError(t, r.reconcileChildResources(t.Context(), sandbox))
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	require.NoError(t, r.Get(t.Context(), types.NamespacedName{Name: persistentStoragePVCName(sandbox.Name), Namespace: sandbox.Namespace}, pvc))
+
+	pod := &corev1.Pod{}
+	err := r.Get(t.Context(), types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace}, pod)
+	require.True(t, k8serrors.IsNotFound(err))
+
+	suspended := meta.FindStatusCondition(sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended))
+	require.NotNil(t, suspended)
+	require.Equal(t, metav1.ConditionTrue, suspended.Status)
+}
+
+func TestReconcileChildResourcesClearsSuspendedConditionOnResume(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-sandbox",
+			Namespace:  "test-ns",
+			UID:        types.UID("sandbox-uid-123"),
+			Generation: 4,
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeRunning,
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+					},
+				},
+			},
+		},
+		Status: sandboxv1beta1.SandboxStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               string(sandboxv1beta1.SandboxConditionSuspended),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: 3,
+					Reason:             sandboxv1beta1.SandboxReasonSuspendedPodTerminated,
+					Message:            "Pod has been terminated. Sandbox is not operational.",
+				},
+			},
+		},
+	}
+	r := SandboxReconciler{
+		Client: newFakeClient(sandbox),
+		Scheme: Scheme,
+		Tracer: asmetrics.NewNoOp(),
+	}
+
+	require.NoError(t, r.reconcileChildResources(t.Context(), sandbox))
+
+	require.Nil(t, meta.FindStatusCondition(sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended)))
+	ready := meta.FindStatusCondition(sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionReady))
+	require.NotNil(t, ready)
+	require.NotEqual(t, sandboxv1beta1.SandboxReasonSuspended, ready.Reason)
 }
 
 func TestSandboxExpiry(t *testing.T) {

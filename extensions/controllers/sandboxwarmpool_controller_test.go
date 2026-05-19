@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	sandboxv1beta1 "sigs.k8s.io/agent-sandbox/api/v1beta1"
 	sandboxcontrollers "sigs.k8s.io/agent-sandbox/controllers"
 	extensionsv1beta1 "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
@@ -590,6 +591,191 @@ func TestCreatePoolSandboxPropagatesVolumeClaimTemplates(t *testing.T) {
 	require.Equal(t, "cache", sb.Spec.VolumeClaimTemplates[1].Name)
 	require.Equal(t, templateName, sb.Annotations[sandboxv1beta1.SandboxTemplateRefAnnotation],
 		"sandbox should have template ref annotation for metrics")
+}
+
+func TestCreatePoolSandboxPropagatesPersistentStorage(t *testing.T) {
+	poolName := "test-pool"
+	poolNamespace := "default"
+	templateName := "test-template"
+	storageClassName := "fast"
+	storageSize := resource.MustParse("12Gi")
+	bootstrap := false
+
+	ctx := context.Background()
+	scheme := newTestScheme()
+
+	template := &extensionsv1beta1.SandboxTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      templateName,
+			Namespace: poolNamespace,
+		},
+		Spec: extensionsv1beta1.SandboxTemplateSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "test-image"},
+						},
+					},
+				},
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Size:             &storageSize,
+					StorageClassName: &storageClassName,
+					Mounts: []sandboxv1beta1.PersistentMount{
+						{Path: "/workspace"},
+						{Path: "/home/user", BootstrapFromImage: &bootstrap},
+					},
+				},
+			},
+		},
+	}
+
+	warmPool := &extensionsv1beta1.SandboxWarmPool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      poolName,
+			Namespace: poolNamespace,
+			UID:       "warmpool-uid-persistent",
+		},
+		Spec: extensionsv1beta1.SandboxWarmPoolSpec{
+			Replicas: ptr.To(int32(1)),
+			TemplateRef: extensionsv1beta1.SandboxTemplateRef{
+				Name: templateName,
+			},
+		},
+	}
+
+	r := SandboxWarmPoolReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithRuntimeObjects(template).
+			Build(),
+		Scheme:       scheme,
+		MaxBatchSize: sandboxCreateDeleteMaxBatchSize,
+	}
+
+	err := r.reconcilePool(ctx, warmPool)
+	require.NoError(t, err)
+
+	list := &sandboxv1beta1.SandboxList{}
+	err = r.List(ctx, list, &client.ListOptions{Namespace: poolNamespace})
+	require.NoError(t, err)
+	require.Len(t, list.Items, 1)
+
+	sb := list.Items[0]
+	require.Equal(t, template.Spec.PersistentStorage, sb.Spec.PersistentStorage)
+
+	template.Spec.PersistentStorage.Mounts[0].Path = "/changed"
+	require.Equal(t, "/workspace", sb.Spec.PersistentStorage.Mounts[0].Path)
+}
+
+func TestComputeSandboxBlueprintHashIncludesPersistentStorage(t *testing.T) {
+	template := &extensionsv1beta1.SandboxTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-template", Namespace: "default"},
+		Spec: extensionsv1beta1.SandboxTemplateSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "test-image"}},
+					},
+				},
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+				},
+			},
+		},
+	}
+
+	initialHash, err := computeSandboxBlueprintHash(template)
+	require.NoError(t, err)
+
+	updatedTemplate := template.DeepCopy()
+	updatedTemplate.Spec.PersistentStorage.Mounts[0].Path = "/home/user"
+	updatedHash, err := computeSandboxBlueprintHash(updatedTemplate)
+	require.NoError(t, err)
+	require.NotEqual(t, initialHash, updatedHash)
+}
+
+func TestReconcilePoolPersistentStorageChangeRollsRecreate(t *testing.T) {
+	poolName := "test-pool"
+	poolNamespace := "default"
+	templateName := "test-template"
+	ctx := context.Background()
+	scheme := newTestScheme()
+
+	template := &extensionsv1beta1.SandboxTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      templateName,
+			Namespace: poolNamespace,
+		},
+		Spec: extensionsv1beta1.SandboxTemplateSpec{
+			SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{
+				PodTemplate: sandboxv1beta1.PodTemplate{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "test-image"}},
+					},
+				},
+				PersistentStorage: &sandboxv1beta1.PersistentStorageSpec{
+					Mounts: []sandboxv1beta1.PersistentMount{{Path: "/workspace"}},
+				},
+			},
+		},
+	}
+	warmPool := &extensionsv1beta1.SandboxWarmPool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      poolName,
+			Namespace: poolNamespace,
+			UID:       "warmpool-uid-persistent-rollout",
+		},
+		Spec: extensionsv1beta1.SandboxWarmPoolSpec{
+			Replicas: ptr.To(int32(1)),
+			TemplateRef: extensionsv1beta1.SandboxTemplateRef{
+				Name: templateName,
+			},
+			UpdateStrategy: &extensionsv1beta1.SandboxWarmPoolUpdateStrategy{
+				Type: extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType,
+			},
+		},
+	}
+
+	r := SandboxWarmPoolReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithRuntimeObjects(template, warmPool).
+			Build(),
+		Scheme:       scheme,
+		MaxBatchSize: sandboxCreateDeleteMaxBatchSize,
+	}
+
+	err := r.reconcilePool(ctx, warmPool)
+	require.NoError(t, err)
+
+	initialHash, err := computeSandboxBlueprintHash(template)
+	require.NoError(t, err)
+
+	sandboxes := &sandboxv1beta1.SandboxList{}
+	err = r.List(ctx, sandboxes, client.InNamespace(poolNamespace))
+	require.NoError(t, err)
+	require.Len(t, sandboxes.Items, 1)
+	require.Equal(t, "/workspace", sandboxes.Items[0].Spec.PersistentStorage.Mounts[0].Path)
+	require.Equal(t, initialHash, sandboxes.Items[0].Labels[sandboxv1beta1.SandboxTemplateHashLabel])
+
+	updatedTemplate := template.DeepCopy()
+	updatedTemplate.Spec.PersistentStorage.Mounts[0].Path = "/home/user"
+	err = r.Update(ctx, updatedTemplate)
+	require.NoError(t, err)
+
+	updatedHash, err := computeSandboxBlueprintHash(updatedTemplate)
+	require.NoError(t, err)
+	require.NotEqual(t, initialHash, updatedHash)
+
+	err = r.reconcilePool(ctx, warmPool)
+	require.NoError(t, err)
+
+	err = r.List(ctx, sandboxes, client.InNamespace(poolNamespace))
+	require.NoError(t, err)
+	require.Len(t, sandboxes.Items, 1)
+	require.Equal(t, "/home/user", sandboxes.Items[0].Spec.PersistentStorage.Mounts[0].Path)
+	require.Equal(t, updatedHash, sandboxes.Items[0].Labels[sandboxv1beta1.SandboxTemplateHashLabel])
 }
 
 func TestCreatePoolSandboxAppliesSecureDefaults(t *testing.T) {
@@ -2240,7 +2426,7 @@ func TestCompareSandboxBlueprint(t *testing.T) {
 // comparison logic is not tracked for drift, so a warm sandbox will not be detected
 // as stale when that field changes.
 func TestSandboxBlueprintFieldsAreCompared(t *testing.T) {
-	expectedFields := []string{"PodTemplate", "VolumeClaimTemplates", "Service"}
+	expectedFields := []string{"PodTemplate", "VolumeClaimTemplates", "PersistentStorage", "Service"}
 
 	var actualFields []string
 	blueprintType := reflect.TypeFor[sandboxv1beta1.SandboxBlueprint]()
