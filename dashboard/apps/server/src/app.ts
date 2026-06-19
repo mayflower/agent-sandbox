@@ -355,10 +355,21 @@ export function buildApp(options: BuildAppOptions) {
     if (!claim) {
       return reply.code(404).send({ message: "Claim not found" });
     }
+    // Safety: "template missing" is only a trustworthy conclusion when the warm
+    // pools (needed to resolve claim -> pool -> template in v1beta1) and the
+    // templates were actually listed. A 403 (RBAC) or 404 (CRD absent) collapses
+    // either kind to an empty list, which would make every claim look
+    // template-less and therefore wrongly deletable. Fail closed instead.
+    if (!snapshot.capabilities.warmPools || !snapshot.capabilities.templates) {
+      return reply.code(409).send({
+        message:
+          "Cannot verify the claim's template because warm pool or template listing is unavailable; refusing to delete.",
+      });
+    }
     // v1beta1: a claim no longer names a template directly — it references a
-    // warm pool that carries the template. Resolve transitively; an
-    // unresolvable ref (no warm pool, or the pool is gone) counts as "no
-    // referenced template", so the missing-template deletion path still runs.
+    // warm pool that carries the template. Resolve transitively; with both
+    // listings available, an unresolvable ref (the referenced pool is genuinely
+    // gone) means the claim is orphaned, so the missing-template path runs.
     const templateRef = resolveClaimTemplateName(claim, snapshot.warmPools);
     const templateExists =
       templateRef !== undefined &&

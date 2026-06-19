@@ -169,6 +169,28 @@ describe("dashboard server app", () => {
     await app.close();
   });
 
+  it("claim delete is refused when warm pools cannot be listed (degraded RBAC/CRD)", async () => {
+    const deleteClaim = vi.fn();
+    // warmPools capability off => the provider degrades the warm-pool list to
+    // empty, so every claim resolves to no template. pending-claim's template
+    // is genuinely absent, so without the capability gate it would be deleted.
+    const app = buildApp({
+      provider: new FakeInventoryProvider({
+        snapshot: createFixtureSnapshot({ capabilities: { warmPools: false } }),
+        deleteClaim,
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/claims/demo/pending-claim/delete",
+    });
+    expect(response.statusCode).toBe(409);
+    expect(deleteClaim).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
   it("attaches identity per-request when tenancy is enabled", async () => {
     const provider = new FakeInventoryProvider();
     const baseSnapshot = await provider.getSnapshot();
