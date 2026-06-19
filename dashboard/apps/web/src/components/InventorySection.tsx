@@ -104,7 +104,9 @@ function ClaimActions({ claim, templateMissing }: { claim: ClaimLiveView; templa
       <p className="mt-2 text-xs text-muted-foreground">
         {templateMissing
           ? `Template "${claim.templateRef}" is not present; safe to delete.`
-          : "Template exists; dashboard only deletes claims whose template is missing."}
+          : claim.templateRef === undefined
+            ? "Claim's warm pool or template could not be resolved; delete is unavailable."
+            : "Template exists; dashboard only deletes claims whose template is missing."}
       </p>
     </section>
   );
@@ -787,7 +789,10 @@ export function InventorySection({
           renderDetail={(claim) => (
             <ClaimDetail
               claim={claim}
-              templateMissing={!templatePresence.has(`${claim.namespace}/${claim.templateRef}`)}
+              templateMissing={
+                claim.templateRef !== undefined &&
+                !templatePresence.has(`${claim.namespace}/${claim.templateRef}`)
+              }
               events={eventsFor("SandboxClaim", claim.namespace, claim.name)}
             />
           )}

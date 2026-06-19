@@ -44,6 +44,12 @@ describe("shared dashboard domain helpers", () => {
 
     expect(mismatch?.readinessMismatch).toBe(true);
     expect(mismatch?.shutdownPolicy).toBe("DeleteForeground");
+    // Claim template is resolved transitively via its warm pool
+    // (mismatch-claim -> mismatch-pool -> custom-net), and the referenced pool
+    // name is surfaced as warmPoolName.
+    expect(mismatch?.templateRef).toBe("custom-net");
+    expect(mismatch?.warmPoolName).toBe("mismatch-pool");
+    expect(pending?.templateRef).toBe("ghost-template");
     expect(pending?.state).toBe("pending");
     expect(warmPools[0]?.fillRatio).toBe(0.5);
     expect(warmPools[0]?.memberSandboxes[0]?.name).toBe("pool-sbx-ready");

@@ -31,7 +31,7 @@ export function InvestigateWizard({ claim, events }: InvestigateWizardProps) {
         <CardContent className="space-y-3 text-sm">
           <Step number={1} title="Claim status">
             <p className="font-mono text-xs">
-              state: {claim.state} · template: {claim.templateRef} · reason: {claim.rawReadyCondition?.reason ?? "—"}
+              state: {claim.state} · template: {claim.templateRef ?? "—"} · reason: {claim.rawReadyCondition?.reason ?? "—"}
             </p>
           </Step>
           <Step number={2} title="Related events (last 15 min)">
