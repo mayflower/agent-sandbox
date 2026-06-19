@@ -233,8 +233,8 @@ export function normalizeClaims(
         namespace,
         name: claim.metadata.name,
         ageSeconds: getAgeSeconds(claim.metadata.creationTimestamp, now),
-        templateRef: resolveClaimTemplateName(claim, snapshot.warmPools) ?? "",
-        warmPoolPolicy: claim.spec.warmPoolRef?.name ?? "default",
+        ...withOptional("templateRef", resolveClaimTemplateName(claim, snapshot.warmPools)),
+        ...withOptional("warmPoolName", claim.spec.warmPoolRef?.name),
         ...withOptional("sandboxName", claim.status?.sandbox?.name),
         podIPs: sandbox?.podIPs ?? claim.status?.sandbox?.podIPs ?? [],
         ...withOptional(
@@ -311,7 +311,7 @@ export function normalizeTemplates(
 
   const activeClaimsByTemplate = new Map<string, number>();
   for (const claim of claims) {
-    if (claim.state === "expired") continue;
+    if (claim.state === "expired" || !claim.templateRef) continue;
     const key = `${claim.namespace}/${claim.templateRef}`;
     activeClaimsByTemplate.set(key, (activeClaimsByTemplate.get(key) ?? 0) + 1);
   }
@@ -455,7 +455,7 @@ export function classifyProblems(
       });
     }
 
-    if (!templates.has(`${claim.namespace}/${claim.templateRef}`)) {
+    if (claim.templateRef && !templates.has(`${claim.namespace}/${claim.templateRef}`)) {
       problems.push({
         kind: "unresolved-template-link",
         severity: "warning",

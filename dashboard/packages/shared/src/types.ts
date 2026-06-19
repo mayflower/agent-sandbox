@@ -372,8 +372,12 @@ export interface ClaimLiveView {
   namespace: string;
   name: string;
   ageSeconds: number;
-  templateRef: string;
-  warmPoolPolicy: "none" | "default" | string;
+  // Resolved transitively via the claim's warm pool (claim -> warmPoolRef ->
+  // pool -> sandboxTemplateRef). Undefined when the warm pool cannot be
+  // resolved (referenced pool absent, or warm-pool listing unavailable).
+  templateRef?: string;
+  // Name of the SandboxWarmPool the claim references (v1beta1 spec.warmPoolRef).
+  warmPoolName?: string;
   sandboxName?: string;
   podIPs: string[];
   rawReadyCondition?: {
