@@ -3356,7 +3356,7 @@ func TestReconcilePersistentStorage(t *testing.T) {
 				Namespace: sandboxNs,
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion:         "agents.x-k8s.io/v1alpha1",
+						APIVersion:         "agents.x-k8s.io/v1beta1",
 						Kind:               "Sandbox",
 						Name:               sandboxName,
 						UID:                sandboxUID,
