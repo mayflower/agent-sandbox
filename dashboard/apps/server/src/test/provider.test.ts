@@ -81,7 +81,7 @@ describe("kubernetes inventory provider", () => {
         return [];
       },
       async listClaims() {
-        return { supported: true, items: [{ metadata: { name: "claim", namespace: "demo" }, spec: { sandboxTemplateRef: { name: "template" } } }] };
+        return { supported: true, items: [{ metadata: { name: "claim", namespace: "demo" }, spec: { warmPoolRef: { name: "pool" } } }] };
       },
       async listWarmPools() {
         return {
@@ -174,7 +174,7 @@ describe("kubernetes inventory provider", () => {
     const [body, options] = patchSpy.mock.calls[0]!;
     expect(body).toMatchObject({
       group: "agents.x-k8s.io",
-      version: "v1alpha1",
+      version: "v1beta1",
       namespace: "demo",
       name: "my-sandbox",
       plural: "sandboxes",

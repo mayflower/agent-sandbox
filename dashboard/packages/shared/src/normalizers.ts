@@ -8,6 +8,7 @@ import {
   getPodReady,
   getTemplateRefName,
   isExpired,
+  resolveClaimTemplateName,
 } from "./helpers.js";
 import type {
   ClaimLiveView,
@@ -232,8 +233,8 @@ export function normalizeClaims(
         namespace,
         name: claim.metadata.name,
         ageSeconds: getAgeSeconds(claim.metadata.creationTimestamp, now),
-        templateRef: claim.spec.sandboxTemplateRef.name,
-        warmPoolPolicy: claim.spec.warmpool ?? "default",
+        templateRef: resolveClaimTemplateName(claim, snapshot.warmPools) ?? "",
+        warmPoolPolicy: claim.spec.warmPoolRef?.name ?? "default",
         ...withOptional("sandboxName", claim.status?.sandbox?.name),
         podIPs: sandbox?.podIPs ?? claim.status?.sandbox?.podIPs ?? [],
         ...withOptional(

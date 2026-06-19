@@ -91,12 +91,11 @@ export interface RawSandboxClaim {
   kind?: "SandboxClaim";
   metadata: RawObjectMeta;
   spec: {
-    sandboxTemplateRef: { name: string };
+    warmPoolRef: { name: string };
     lifecycle?: {
       shutdownTime?: string;
       shutdownPolicy?: "Delete" | "DeleteForeground" | "Retain";
     };
-    warmpool?: string;
   };
   status?: {
     conditions?: RawCondition[];
