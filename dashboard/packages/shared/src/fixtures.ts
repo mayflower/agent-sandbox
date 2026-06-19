@@ -41,7 +41,7 @@ function createSandboxes(): RawSandbox[] {
         },
         ownerReferences: [
           {
-            apiVersion: "extensions.agents.x-k8s.io/v1alpha1",
+            apiVersion: "extensions.agents.x-k8s.io/v1beta1",
             kind: "SandboxClaim",
             name: "quick-claim",
             controller: true,
@@ -106,7 +106,7 @@ function createSandboxes(): RawSandbox[] {
         },
         ownerReferences: [
           {
-            apiVersion: "extensions.agents.x-k8s.io/v1alpha1",
+            apiVersion: "extensions.agents.x-k8s.io/v1beta1",
             kind: "SandboxClaim",
             name: "mismatch-claim",
             controller: true,
@@ -142,7 +142,7 @@ function createSandboxes(): RawSandbox[] {
         },
         ownerReferences: [
           {
-            apiVersion: "extensions.agents.x-k8s.io/v1alpha1",
+            apiVersion: "extensions.agents.x-k8s.io/v1beta1",
             kind: "SandboxWarmPool",
             name: "fast-pool",
             controller: true,
@@ -198,8 +198,7 @@ function createClaims(): RawSandboxClaim[] {
         creationTimestamp: "2026-04-15T08:00:00Z",
       },
       spec: {
-        sandboxTemplateRef: { name: "python-secure" },
-        warmpool: "default",
+        warmPoolRef: { name: "fast-pool" },
       },
       status: {
         conditions: [{ type: "Ready", status: "True", reason: "SandboxReady" }],
@@ -216,8 +215,7 @@ function createClaims(): RawSandboxClaim[] {
         creationTimestamp: "2026-04-15T10:00:00Z",
       },
       spec: {
-        sandboxTemplateRef: { name: "custom-net" },
-        warmpool: "none",
+        warmPoolRef: { name: "mismatch-pool" },
         lifecycle: {
           shutdownPolicy: "DeleteForeground",
         },
@@ -236,8 +234,7 @@ function createClaims(): RawSandboxClaim[] {
         creationTimestamp: "2026-04-15T11:00:00Z",
       },
       spec: {
-        sandboxTemplateRef: { name: "ghost-template" },
-        warmpool: "fast-pool",
+        warmPoolRef: { name: "pending-pool" },
       },
       status: {
         conditions: [{ type: "Ready", status: "False", reason: "TemplatePending" }],
@@ -263,6 +260,35 @@ function createWarmPools(): RawSandboxWarmPool[] {
         replicas: 2,
         readyReplicas: 1,
         selector: "agents.x-k8s.io/warm-pool-sandbox=hash-fast-pool",
+      },
+    },
+    // Pool referenced by mismatch-claim. Carries the template the claim used
+    // to name directly (custom-net). replicas:0 with no status keeps the
+    // warm-pool totals/ordering identical to the single-pool fixture so the
+    // overview and chart assertions stay valid.
+    {
+      metadata: {
+        name: "mismatch-pool",
+        namespace: "demo",
+        creationTimestamp: "2026-04-15T07:35:00Z",
+      },
+      spec: {
+        replicas: 0,
+        sandboxTemplateRef: { name: "custom-net" },
+      },
+    },
+    // Pool referenced by pending-claim. Points at a template that is absent
+    // from the snapshot (ghost-template) so the claim still resolves to a
+    // missing template and surfaces as an unresolved-template-link.
+    {
+      metadata: {
+        name: "pending-pool",
+        namespace: "demo",
+        creationTimestamp: "2026-04-15T07:40:00Z",
+      },
+      spec: {
+        replicas: 0,
+        sandboxTemplateRef: { name: "ghost-template" },
       },
     },
   ];
@@ -331,7 +357,7 @@ function createPods(): RawPod[] {
         creationTimestamp: "2026-04-15T08:00:30Z",
         ownerReferences: [
           {
-            apiVersion: "agents.x-k8s.io/v1alpha1",
+            apiVersion: "agents.x-k8s.io/v1beta1",
             kind: "Sandbox",
             name: "claim-ready",
             controller: true,
@@ -355,7 +381,7 @@ function createPods(): RawPod[] {
         creationTimestamp: "2026-04-15T07:45:30Z",
         ownerReferences: [
           {
-            apiVersion: "agents.x-k8s.io/v1alpha1",
+            apiVersion: "agents.x-k8s.io/v1beta1",
             kind: "Sandbox",
             name: "pool-sbx-ready",
             controller: true,
@@ -400,7 +426,7 @@ function createPvcs(): RawPersistentVolumeClaim[] {
         namespace: "demo",
         ownerReferences: [
           {
-            apiVersion: "agents.x-k8s.io/v1alpha1",
+            apiVersion: "agents.x-k8s.io/v1beta1",
             kind: "Sandbox",
             name: "claim-ready",
             controller: true,

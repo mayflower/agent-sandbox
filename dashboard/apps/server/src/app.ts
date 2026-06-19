@@ -13,6 +13,7 @@ import {
   normalizeSandboxes,
   normalizeTemplates,
   normalizeWarmPools,
+  resolveClaimTemplateName,
   type CostRates,
   type Identity,
   type InventoryProvider,
@@ -354,11 +355,17 @@ export function buildApp(options: BuildAppOptions) {
     if (!claim) {
       return reply.code(404).send({ message: "Claim not found" });
     }
-    const templateRef = claim.spec.sandboxTemplateRef.name;
-    const templateExists = snapshot.templates.some(
-      (template) =>
-        template.metadata.name === templateRef && (template.metadata.namespace ?? "default") === namespace,
-    );
+    // v1beta1: a claim no longer names a template directly — it references a
+    // warm pool that carries the template. Resolve transitively; an
+    // unresolvable ref (no warm pool, or the pool is gone) counts as "no
+    // referenced template", so the missing-template deletion path still runs.
+    const templateRef = resolveClaimTemplateName(claim, snapshot.warmPools);
+    const templateExists =
+      templateRef !== undefined &&
+      snapshot.templates.some(
+        (template) =>
+          template.metadata.name === templateRef && (template.metadata.namespace ?? "default") === namespace,
+      );
     if (templateExists) {
       return reply.code(409).send({
         message: "Referenced template exists; dashboard only deletes claims whose template is missing",
@@ -366,7 +373,7 @@ export function buildApp(options: BuildAppOptions) {
       });
     }
     await options.provider.deleteClaim(namespace, name);
-    audit(`delete claim ${namespace}/${name} reason=missing-template ref=${templateRef}`);
+    audit(`delete claim ${namespace}/${name} reason=missing-template ref=${templateRef ?? "<unresolved>"}`);
     return { kind: "SandboxClaim", namespace, name, action: "deleted" };
   });
 

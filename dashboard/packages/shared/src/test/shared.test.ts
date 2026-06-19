@@ -174,7 +174,7 @@ describe("shared dashboard domain helpers", () => {
     expect(ambiguous?.warmPoolName).toBe("fast-pool");
   });
 
-  it("resolves templateRef via SandboxClaim owner when no annotation is present", () => {
+  it("resolves templateRef via SandboxClaim owner through its warm pool when no annotation is present", () => {
     const sandbox: RawSandbox = {
       metadata: {
         name: "owner-resolved-sbx",
@@ -187,12 +187,20 @@ describe("shared dashboard domain helpers", () => {
       spec: { podTemplate: { spec: { containers: [{ name: "main", image: "busybox" }] } } },
       status: {},
     };
+    // v1beta1: the claim references a warm pool, and the pool carries the
+    // template. Resolution must hop claim -> warmPoolRef -> warm pool ->
+    // sandboxTemplateRef.
     const claim: RawSandboxClaim = {
       metadata: { name: "my-claim", namespace: "demo", creationTimestamp: "2026-04-15T10:00:00Z" },
-      spec: { sandboxTemplateRef: { name: "python-secure-v2" } },
+      spec: { warmPoolRef: { name: "v2-pool" } },
       status: {},
     };
-    expect(getTemplateRefName(sandbox, { claims: [claim], warmPools: [] })).toBe("python-secure-v2");
+    const warmPool: RawSandboxWarmPool = {
+      metadata: { name: "v2-pool", namespace: "demo", creationTimestamp: "2026-04-15T09:00:00Z" },
+      spec: { replicas: 1, sandboxTemplateRef: { name: "python-secure-v2" } },
+      status: {},
+    };
+    expect(getTemplateRefName(sandbox, { claims: [claim], warmPools: [warmPool] })).toBe("python-secure-v2");
   });
 
   it("resolves templateRef via SandboxWarmPool owner when no annotation is present", () => {

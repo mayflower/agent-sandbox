@@ -158,7 +158,7 @@ export class KubernetesClusterReader implements ClusterReader {
   async listSandboxes(): Promise<RawSandbox[]> {
     const response = await this.customObjectsApi.listClusterCustomObject({
       group: "agents.x-k8s.io",
-      version: "v1alpha1",
+      version: "v1beta1",
       plural: "sandboxes",
     });
     return asItems<RawSandbox>(response);
@@ -206,7 +206,7 @@ export class KubernetesClusterReader implements ClusterReader {
     return safeListCustomObject(async () =>
       this.customObjectsApi.listClusterCustomObject({
         group: "extensions.agents.x-k8s.io",
-        version: "v1alpha1",
+        version: "v1beta1",
         plural: "sandboxclaims",
       }),
     );
@@ -216,7 +216,7 @@ export class KubernetesClusterReader implements ClusterReader {
     return safeListCustomObject(async () =>
       this.customObjectsApi.listClusterCustomObject({
         group: "extensions.agents.x-k8s.io",
-        version: "v1alpha1",
+        version: "v1beta1",
         plural: "sandboxwarmpools",
       }),
     );
@@ -226,7 +226,7 @@ export class KubernetesClusterReader implements ClusterReader {
     return safeListCustomObject(async () =>
       this.customObjectsApi.listClusterCustomObject({
         group: "extensions.agents.x-k8s.io",
-        version: "v1alpha1",
+        version: "v1beta1",
         plural: "sandboxtemplates",
       }),
     );
@@ -235,7 +235,7 @@ export class KubernetesClusterReader implements ClusterReader {
   async deleteSandbox(namespace: string, name: string): Promise<void> {
     await this.customObjectsApi.deleteNamespacedCustomObject({
       group: "agents.x-k8s.io",
-      version: "v1alpha1",
+      version: "v1beta1",
       namespace,
       plural: "sandboxes",
       name,
@@ -245,7 +245,7 @@ export class KubernetesClusterReader implements ClusterReader {
   async deleteClaim(namespace: string, name: string): Promise<void> {
     await this.customObjectsApi.deleteNamespacedCustomObject({
       group: "extensions.agents.x-k8s.io",
-      version: "v1alpha1",
+      version: "v1beta1",
       namespace,
       plural: "sandboxclaims",
       name,
@@ -257,7 +257,7 @@ export class KubernetesClusterReader implements ClusterReader {
       await this.customObjectsApi.patchNamespacedCustomObject(
         {
           group: "agents.x-k8s.io",
-          version: "v1alpha1",
+          version: "v1beta1",
           namespace,
           plural: "sandboxes",
           name,
@@ -275,7 +275,7 @@ export class KubernetesClusterReader implements ClusterReader {
     await this.customObjectsApi.patchNamespacedCustomObject(
       {
         group: "agents.x-k8s.io",
-        version: "v1alpha1",
+        version: "v1beta1",
         namespace,
         plural: "sandboxes",
         name,
@@ -293,7 +293,7 @@ export class KubernetesClusterReader implements ClusterReader {
     await this.customObjectsApi.patchNamespacedCustomObject(
       {
         group: "extensions.agents.x-k8s.io",
-        version: "v1alpha1",
+        version: "v1beta1",
         namespace,
         plural: "sandboxclaims",
         name,

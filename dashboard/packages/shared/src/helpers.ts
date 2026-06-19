@@ -47,6 +47,28 @@ export function getPodName(sandbox: RawSandbox): string {
   return sandbox.metadata.annotations?.[SANDBOX_POD_NAME_ANNOTATION] ?? sandbox.metadata.name;
 }
 
+/** Resolve the template a claim ultimately uses. As of v1beta1 a claim no
+ *  longer references a template directly; it references a SandboxWarmPool
+ *  (`warmPoolRef`) and the pool carries the `sandboxTemplateRef`. So the
+ *  template is reached transitively through the matching warm pool in the
+ *  same namespace. Returns undefined when the claim has no warmPoolRef or the
+ *  referenced pool isn't in the snapshot. */
+export function resolveClaimTemplateName(
+  claim: RawSandboxClaim,
+  warmPools: RawSandboxWarmPool[],
+): string | undefined {
+  const warmPoolRef = claim.spec.warmPoolRef?.name;
+  if (!warmPoolRef) {
+    return undefined;
+  }
+
+  const namespace = getNamespace(claim.metadata);
+  const pool = warmPools.find(
+    (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === warmPoolRef,
+  );
+  return pool?.spec.sandboxTemplateRef.name;
+}
+
 export function getTemplateRefName(
   sandbox: RawSandbox,
   owners?: { claims: RawSandboxClaim[]; warmPools: RawSandboxWarmPool[] },
@@ -59,7 +81,7 @@ export function getTemplateRefName(
       const claim = owners.claims.find(
         (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === controller.name,
       );
-      return claim?.spec.sandboxTemplateRef.name || undefined;
+      return claim ? resolveClaimTemplateName(claim, owners.warmPools) : undefined;
     }
     const warmPool = owners.warmPools.find(
       (candidate) => getNamespace(candidate.metadata) === namespace && candidate.metadata.name === controller.name,
