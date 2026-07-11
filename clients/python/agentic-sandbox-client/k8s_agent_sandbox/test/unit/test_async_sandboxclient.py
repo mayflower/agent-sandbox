@@ -174,6 +174,16 @@ class TestAsyncSandboxClient(unittest.IsolatedAsyncioTestCase):
         await self.client.delete_sandbox("test-claim", "test-ns")
         mock_sandbox.terminate.assert_called_once()
 
+    async def test_delete_sandbox_propagates_failure_for_retry(self):
+        with patch.object(
+            self.client,
+            "_delete_claim",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("transient"),
+        ):
+            with pytest.raises(RuntimeError, match="transient"):
+                await self.client.delete_sandbox("test-claim", "test-ns")
+
     async def test_delete_all(self):
         mock1 = MagicMock()
         mock1.terminate = AsyncMock()

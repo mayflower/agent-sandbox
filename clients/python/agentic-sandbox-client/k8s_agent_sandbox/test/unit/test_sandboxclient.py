@@ -183,6 +183,13 @@ class TestSandboxClient(unittest.TestCase):
             
         mock_delete_claim.assert_called_once_with("test-claim", "test-namespace")
 
+    def test_delete_sandbox_propagates_failure_for_retry(self):
+        with patch.object(
+            self.client, '_delete_claim', side_effect=RuntimeError("transient")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "transient"):
+                self.client.delete_sandbox("test-claim", "test-namespace")
+
     def test_delete_all(self):
         mock_sandbox1 = MagicMock()
         mock_sandbox1.namespace = "ns1"

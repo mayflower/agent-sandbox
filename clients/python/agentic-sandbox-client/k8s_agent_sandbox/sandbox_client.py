@@ -443,14 +443,11 @@ class SandboxClient(Generic[T]):
         """
         key = (namespace, claim_name)
         sandbox = self._active_connection_sandboxes.get(key)
-        try:
-            if sandbox:
-                sandbox.terminate()
-                self._active_connection_sandboxes.pop(key, None)
-            else:
-                self._delete_claim(claim_name, namespace)
-        except Exception as e:
-            logging.error(f"Failed to delete sandbox '{claim_name}' in namespace '{namespace}': {e}")
+        if sandbox:
+            sandbox.terminate()
+            self._active_connection_sandboxes.pop(key, None)
+        else:
+            self._delete_claim(claim_name, namespace)
             
     def delete_all(self):
         """

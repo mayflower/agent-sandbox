@@ -502,17 +502,12 @@ class AsyncSandboxClient(Generic[T]):
         key = (namespace, claim_name)
         async with self._lock:
             sandbox = self._active_connection_sandboxes.get(key)
-        try:
-            if sandbox:
-                await sandbox.terminate()
-                async with self._lock:
-                    self._active_connection_sandboxes.pop(key, None)
-            else:
-                await self._delete_claim(claim_name, namespace)
-        except Exception as e:
-            logger.error(
-                f"Failed to delete sandbox '{claim_name}' in namespace '{namespace}': {e}"
-            )
+        if sandbox:
+            await sandbox.terminate()
+            async with self._lock:
+                self._active_connection_sandboxes.pop(key, None)
+        else:
+            await self._delete_claim(claim_name, namespace)
 
     async def delete_all(self):
         """Cleanup all tracked sandboxes managed by this client."""
