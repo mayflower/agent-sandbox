@@ -270,7 +270,9 @@ export function normalizeWarmPools(
       const members = sandboxes.filter(
         (sandbox) => sandbox.namespace === namespace && sandbox.warmPoolName === warmPool.metadata.name,
       );
-      const desiredReplicas = warmPool.spec.replicas;
+      // v1beta1 makes spec.replicas optional with a server-side default of 1;
+      // mirror that default here so a snapshot that omits it doesn't read as 0.
+      const desiredReplicas = warmPool.spec.replicas ?? 1;
       const readyReplicas = warmPool.status?.readyReplicas ?? members.filter((member) => member.effectiveReady).length;
       const creatingReplicas = members.filter((member) => member.runtimeState === "starting").length;
       const failedReplicas = members.filter(

@@ -111,7 +111,10 @@ export interface RawSandboxWarmPool {
   kind?: "SandboxWarmPool";
   metadata: RawObjectMeta;
   spec: {
-    replicas: number;
+    // Optional in the v1beta1 CRD: the API server defaults it to 1 when omitted
+    // (SandboxWarmPool.spec.replicas has `default: 1`), so consumers must treat a
+    // missing value as 1 rather than assume it is always present.
+    replicas?: number;
     sandboxTemplateRef: { name: string };
     updateStrategy?: {
       type?: "Recreate" | "OnReplenish";
