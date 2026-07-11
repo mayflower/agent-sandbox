@@ -415,6 +415,29 @@ class TestAsyncSandbox(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIn("connection_config is required", str(ctx.exception))
 
+    async def test_service_endpoint_metadata(self):
+        sandbox = AsyncSandbox(
+            claim_name="test",
+            sandbox_id="sandbox-id",
+            namespace="tenant-ns",
+            connection_config=SandboxDirectConnectionConfig(
+                api_url="http://router:8080", server_port=9000
+            ),
+            k8s_helper=AsyncMock(),
+        )
+        self.assertEqual(
+            sandbox.service_host,
+            "sandbox-id.tenant-ns.svc.cluster.local",
+        )
+        self.assertEqual(
+            sandbox.service_url(),
+            "http://sandbox-id.tenant-ns.svc.cluster.local:9000",
+        )
+        self.assertEqual(
+            sandbox.service_url(9222),
+            "http://sandbox-id.tenant-ns.svc.cluster.local:9222",
+        )
+
     async def test_get_pod_ip(self):
         """Tests that get_pod_ip returns the pod IP when present."""
         mock_k8s_helper = AsyncMock()

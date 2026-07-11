@@ -272,6 +272,18 @@ class AsyncK8sHelper:
                 return None
             raise
 
+    async def patch_sandbox_claim(self, name: str, namespace: str, body: dict):
+        """Patch a SandboxClaim custom resource."""
+        await self._ensure_initialized()
+        return await self.custom_objects_api.patch_namespaced_custom_object(
+            group=CLAIM_API_GROUP,
+            version=CLAIM_API_VERSION,
+            namespace=namespace,
+            plural=CLAIM_PLURAL_NAME,
+            name=name,
+            body=body,
+        )
+
     async def list_sandbox_claims(self, namespace: str, label_selector: str | None = None) -> list[str]:
         """Lists all SandboxClaim custom resources in a namespace.
 

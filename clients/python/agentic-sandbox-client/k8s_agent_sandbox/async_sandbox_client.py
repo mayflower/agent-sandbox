@@ -25,13 +25,21 @@ import logging
 import sys
 import time
 import uuid
+from datetime import datetime
 from typing import Generic, TypeVar
 
+from kubernetes_asyncio.client.exceptions import ApiException
+
+from .acquisition import (
+    SandboxAcquisition,
+    merge_claim_labels,
+    validate_existing_claim,
+)
 from .async_k8s_helper import AsyncK8sHelper
 from .async_sandbox import AsyncSandbox
 from .exceptions import SandboxNotFoundError
 from .pod_metadata import build_pod_metadata, validate_labels
-from .utils import construct_sandbox_claim_lifecycle_spec
+from .utils import construct_sandbox_claim_lifecycle_spec, validate_claim_name
 from .models import SandboxConnectionConfig, SandboxInClusterConnectionConfig, SandboxTracerConfig
 from .trace_manager import async_trace_span, create_tracer_manager, initialize_tracer, trace
 
@@ -149,6 +157,7 @@ class AsyncSandboxClient(Generic[T]):
         volume_claim_templates: list[dict] | None = None,
         pod_labels: dict[str, str] | None = None,
         pod_annotations: dict[str, str] | None = None,
+        claim_name: str | None = None,
     ) -> T:
         """Provisions a new Sandbox claim and returns an async Sandbox handle.
 
@@ -171,6 +180,8 @@ class AsyncSandboxClient(Generic[T]):
                 the sandbox through the Downward API.
             pod_annotations: Optional annotations stamped onto the running
                 Sandbox **Pod** via ``spec.additionalPodMetadata.annotations``.
+            claim_name: Optional deterministic SandboxClaim name. When omitted,
+                the existing random ``sandbox-claim-<hex>`` naming is preserved.
 
         Example::
 
@@ -188,11 +199,16 @@ class AsyncSandboxClient(Generic[T]):
 
         lifecycle = construct_sandbox_claim_lifecycle_spec(shutdown_after_seconds) if shutdown_after_seconds is not None else None
 
-        claim_name = f"sandbox-claim-{uuid.uuid4().hex[:8]}"
+        effective_claim_name = (
+            validate_claim_name(claim_name)
+            if claim_name is not None
+            else f"sandbox-claim-{uuid.uuid4().hex[:8]}"
+        )
+        claim_created = False
 
         try:
             await self._create_claim(
-                claim_name,
+                effective_claim_name,
                 warmpool,
                 namespace,
                 labels=labels,
@@ -200,9 +216,10 @@ class AsyncSandboxClient(Generic[T]):
                 volume_claim_templates=volume_claim_templates,
                 pod_metadata=pod_metadata
             )
+            claim_created = True
             start_time = time.monotonic()
             sandbox_id = await self.k8s_helper.resolve_sandbox_name(
-                claim_name, namespace, sandbox_ready_timeout
+                effective_claim_name, namespace, sandbox_ready_timeout
             )
             elapsed_time = time.monotonic() - start_time
             remaining_timeout = max(0, int(sandbox_ready_timeout - elapsed_time))
@@ -211,7 +228,7 @@ class AsyncSandboxClient(Generic[T]):
             await self._wait_for_sandbox_ready(sandbox_id, namespace, remaining_timeout)
 
             sandbox = self.sandbox_class(
-                claim_name=claim_name,
+                claim_name=effective_claim_name,
                 sandbox_id=sandbox_id,
                 namespace=namespace,
                 connection_config=self.connection_config,
@@ -219,12 +236,154 @@ class AsyncSandboxClient(Generic[T]):
                 k8s_helper=self.k8s_helper,
             )
         except (Exception, asyncio.CancelledError):
-            await asyncio.shield(self._delete_claim(claim_name, namespace))
+            if claim_created:
+                await asyncio.shield(
+                    self._delete_claim(effective_claim_name, namespace)
+                )
             raise
 
         async with self._lock:
-            self._active_connection_sandboxes[(namespace, claim_name)] = sandbox
+            self._active_connection_sandboxes[
+                (namespace, effective_claim_name)
+            ] = sandbox
         return sandbox
+
+    async def get_or_create_sandbox(
+        self,
+        warmpool: str,
+        namespace: str = "default",
+        sandbox_ready_timeout: int = 180,
+        labels: dict[str, str] | None = None,
+        *,
+        claim_name: str,
+        required_labels: dict[str, str] | None = None,
+        shutdown_after_seconds: int | None = None,
+        volume_claim_templates: list[dict] | None = None,
+        pod_labels: dict[str, str] | None = None,
+        pod_annotations: dict[str, str] | None = None,
+    ) -> SandboxAcquisition[T]:
+        """Atomically attach to or create a deterministic SandboxClaim."""
+        validate_claim_name(claim_name)
+        if labels:
+            validate_labels(labels)
+        if required_labels:
+            validate_labels(required_labels)
+        creation_labels = merge_claim_labels(labels, required_labels)
+
+        existing_claim = await self.k8s_helper.get_sandbox_claim(
+            claim_name, namespace
+        )
+        if existing_claim is not None:
+            return await self._attach_acquisition(
+                existing_claim,
+                claim_name=claim_name,
+                namespace=namespace,
+                warmpool=warmpool,
+                required_labels=required_labels,
+                resolve_timeout=sandbox_ready_timeout,
+            )
+
+        try:
+            sandbox = await self.create_sandbox(
+                warmpool,
+                namespace,
+                sandbox_ready_timeout,
+                creation_labels,
+                shutdown_after_seconds=shutdown_after_seconds,
+                volume_claim_templates=volume_claim_templates,
+                pod_labels=pod_labels,
+                pod_annotations=pod_annotations,
+                claim_name=claim_name,
+            )
+        except ApiException as exc:
+            if exc.status != 409:
+                raise
+            winner = await self.k8s_helper.get_sandbox_claim(
+                claim_name, namespace
+            )
+            if winner is None:
+                raise SandboxNotFoundError(
+                    f"SandboxClaim {claim_name!r} disappeared after create conflict"
+                ) from exc
+            return await self._attach_acquisition(
+                winner,
+                claim_name=claim_name,
+                namespace=namespace,
+                warmpool=warmpool,
+                required_labels=required_labels,
+                resolve_timeout=sandbox_ready_timeout,
+            )
+
+        return SandboxAcquisition(
+            sandbox=sandbox,
+            created=True,
+            claim_name=claim_name,
+            sandbox_id=sandbox.sandbox_id,
+            namespace=namespace,
+        )
+
+    async def _attach_acquisition(
+        self,
+        claim: dict,
+        *,
+        claim_name: str,
+        namespace: str,
+        warmpool: str,
+        required_labels: dict[str, str] | None,
+        resolve_timeout: int,
+    ) -> SandboxAcquisition[T]:
+        validate_existing_claim(
+            claim,
+            claim_name=claim_name,
+            namespace=namespace,
+            warmpool=warmpool,
+            required_labels=required_labels,
+        )
+        sandbox = await self.get_sandbox(
+            claim_name,
+            namespace=namespace,
+            resolve_timeout=resolve_timeout,
+        )
+        return SandboxAcquisition(
+            sandbox=sandbox,
+            created=False,
+            claim_name=claim_name,
+            sandbox_id=sandbox.sandbox_id,
+            namespace=namespace,
+        )
+
+    async def renew_sandbox(
+        self,
+        claim_name: str,
+        namespace: str,
+        shutdown_after_seconds: int,
+        shutdown_policy: str = "DeleteForeground",
+    ) -> datetime:
+        """Renew a Claim lifecycle and return its effective UTC deadline."""
+        validate_claim_name(claim_name)
+        lifecycle = construct_sandbox_claim_lifecycle_spec(
+            shutdown_after_seconds,
+            shutdown_policy=shutdown_policy,
+        )
+        if await self.k8s_helper.get_sandbox_claim(claim_name, namespace) is None:
+            raise SandboxNotFoundError(
+                f"SandboxClaim {claim_name!r} not found in namespace {namespace!r}"
+            )
+        try:
+            await self.k8s_helper.patch_sandbox_claim(
+                claim_name,
+                namespace,
+                {"spec": {"lifecycle": lifecycle}},
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                raise SandboxNotFoundError(
+                    f"SandboxClaim {claim_name!r} not found in namespace {namespace!r}"
+                ) from exc
+            raise
+        return datetime.fromisoformat(
+            lifecycle["shutdownTime"].replace("Z", "+00:00")
+        )
 
     async def get_sandbox(
         self,

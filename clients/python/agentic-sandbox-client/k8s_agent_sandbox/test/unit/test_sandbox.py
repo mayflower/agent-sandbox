@@ -76,6 +76,25 @@ class TestSandbox(unittest.TestCase):
         self.assertEqual(self.sandbox.namespace, self.namespace)
         self.assertFalse(self.sandbox._is_closed)
 
+    def test_service_endpoint_metadata(self):
+        self.assertEqual(
+            self.sandbox.service_host,
+            "test-sandbox.test-namespace.svc.cluster.local",
+        )
+        self.assertEqual(
+            self.sandbox.service_url(),
+            "http://test-sandbox.test-namespace.svc.cluster.local:8888",
+        )
+        self.assertEqual(
+            self.sandbox.service_url(5901),
+            "http://test-sandbox.test-namespace.svc.cluster.local:5901",
+        )
+
+    def test_service_url_rejects_invalid_port(self):
+        for port in [0, 65536, True, "8888"]:
+            with self.subTest(port=port), self.assertRaises(ValueError):
+                self.sandbox.service_url(port)
+
     @patch('k8s_agent_sandbox.sandbox.Filesystem')
     @patch('k8s_agent_sandbox.sandbox.CommandExecutor')
     @patch('k8s_agent_sandbox.sandbox.create_tracer_manager')

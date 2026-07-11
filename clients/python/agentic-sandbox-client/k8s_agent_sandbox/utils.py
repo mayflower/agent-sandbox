@@ -17,14 +17,46 @@
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 import ipaddress
+import re
 
 
-def construct_sandbox_claim_lifecycle_spec(shutdown_after_seconds: int) -> dict[str, str]:
+_DNS_1123_LABEL_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+_SHUTDOWN_POLICIES = frozenset({"Delete", "DeleteForeground", "Retain"})
+
+
+def validate_claim_name(claim_name: str) -> str:
+    """Validate a caller-supplied SandboxClaim name.
+
+    Kubernetes object names used here must be DNS-1123 labels: lowercase,
+    at most 63 characters, and composed only of alphanumeric characters or
+    ``-`` with an alphanumeric character at each end.
+    """
+    if not isinstance(claim_name, str):
+        raise ValueError(
+            f"claim_name must be a string, got {type(claim_name).__name__}"
+        )
+    if not claim_name:
+        raise ValueError("claim_name cannot be empty")
+    if len(claim_name) > 63:
+        raise ValueError("claim_name must contain at most 63 characters")
+    if not _DNS_1123_LABEL_RE.fullmatch(claim_name):
+        raise ValueError(
+            "claim_name must be a valid Kubernetes DNS-1123 label"
+        )
+    return claim_name
+
+
+def construct_sandbox_claim_lifecycle_spec(
+    shutdown_after_seconds: int,
+    *,
+    shutdown_policy: str = "Delete",
+) -> dict[str, str]:
     """Construct a SandboxClaim lifecycle spec dict from a TTL in seconds.
 
     Returns a dict suitable for inclusion as ``spec.lifecycle`` in a
     SandboxClaim manifest, with ``shutdownTime`` set to *now + TTL* (UTC)
-    and ``shutdownPolicy`` set to ``"Delete"``.
+    and the requested ``shutdownPolicy``. The default remains ``"Delete"``
+    for backward compatibility with existing create calls.
 
     Raises ``ValueError`` if the input is not a positive integer or is
     too large for datetime arithmetic.
@@ -37,6 +69,11 @@ def construct_sandbox_claim_lifecycle_spec(shutdown_after_seconds: int) -> dict[
         raise ValueError(
             f"shutdown_after_seconds must be positive, got {shutdown_after_seconds}"
         )
+    if shutdown_policy not in _SHUTDOWN_POLICIES:
+        allowed = ", ".join(sorted(_SHUTDOWN_POLICIES))
+        raise ValueError(
+            f"shutdown_policy must be one of {allowed}, got {shutdown_policy!r}"
+        )
     try:
         shutdown_time = datetime.now(timezone.utc) + timedelta(seconds=shutdown_after_seconds)
     except OverflowError:
@@ -45,7 +82,7 @@ def construct_sandbox_claim_lifecycle_spec(shutdown_after_seconds: int) -> dict[
         ) from None
     return {
         "shutdownTime": shutdown_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "shutdownPolicy": "Delete",
+        "shutdownPolicy": shutdown_policy,
     }
 
 

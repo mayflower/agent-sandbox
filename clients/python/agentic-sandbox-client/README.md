@@ -321,7 +321,47 @@ Behavioral notes:
   domain allow-list and system-label restrictions are enforced server-side and
   are not replicated client-side.
 
-### 8. Custom Volume Claim Templates
+### 8. Durable Session Claims
+
+Applications that need one durable sandbox per session can supply a stable
+DNS-1123 Claim name and use the atomic get-or-create operation:
+
+```python
+acquisition = client.get_or_create_sandbox(
+    warmpool="python-sandbox-warmpool",
+    namespace="default",
+    claim_name="session-d7yd5m2y2j",
+    required_labels={"sessions.example.com/key": "d7yd5m2y2j"},
+    shutdown_after_seconds=3600,
+)
+
+sandbox = acquisition.sandbox
+if acquisition.created:
+    initialize_new_workspace(sandbox)
+```
+
+The Claim name must be a Kubernetes DNS-1123 label. When multiple processes
+race, Kubernetes name uniqueness selects one creator; callers receiving
+`409 AlreadyExists` read and validate the winning Claim. Existing Claims must
+reference the requested WarmPool and match every `required_labels` entry or
+the operation fails closed. The SDK never deletes the winner of a create race.
+
+Refresh an idle deadline without reconstructing the Claim manifest:
+
+```python
+deadline = client.renew_sandbox(
+    "session-d7yd5m2y2j",
+    "default",
+    shutdown_after_seconds=3600,
+)
+```
+
+Renewal defaults to `DeleteForeground` and returns the effective UTC deadline.
+`AsyncSandboxClient` provides equivalent async methods. Sandbox handles also
+expose `service_host`, `service_url(port=None)`, `get_pod_ip()`, `claim_name`,
+`sandbox_id`, and `namespace` for endpoint-aware integrations.
+
+### 9. Custom Volume Claim Templates
 
 You can dynamically request persistent volumes to be attached to your Sandbox Pod by specifying `volume_claim_templates`. This allows the sandbox to mount custom PersistentVolumeClaims (PVCs).
 

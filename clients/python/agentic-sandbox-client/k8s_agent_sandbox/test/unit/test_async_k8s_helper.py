@@ -94,6 +94,28 @@ class TestAsyncK8sHelperCreateSandboxClaim(unittest.IsolatedAsyncioTestCase):
         body = call_kwargs["body"]
         self.assertNotIn("additionalPodMetadata", body["spec"])
 
+    async def test_patch_sandbox_claim(self):
+        self.helper.custom_objects_api.patch_namespaced_custom_object = AsyncMock(
+            return_value={"metadata": {"name": "test-claim"}}
+        )
+        body = {
+            "spec": {
+                "lifecycle": {
+                    "shutdownTime": "2026-12-31T23:59:59Z",
+                    "shutdownPolicy": "DeleteForeground",
+                }
+            }
+        }
+
+        result = await self.helper.patch_sandbox_claim(
+            "test-claim", "test-namespace", body
+        )
+
+        self.assertEqual(result["metadata"]["name"], "test-claim")
+        call = self.helper.custom_objects_api.patch_namespaced_custom_object
+        self.assertEqual(call.call_args.kwargs["name"], "test-claim")
+        self.assertEqual(call.call_args.kwargs["body"], body)
+
 
 class TestAsyncK8sHelperResolveSandboxName(unittest.IsolatedAsyncioTestCase):
 

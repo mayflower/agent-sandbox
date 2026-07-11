@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .sandbox_client import SandboxClient
+from .acquisition import SandboxAcquisition
 from .exceptions import (
     SandboxError,
     SandboxNotFoundError,

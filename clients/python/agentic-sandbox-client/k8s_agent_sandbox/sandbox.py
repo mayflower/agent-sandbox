@@ -78,6 +78,20 @@ class Sandbox:
         self._is_closed = False
         self._pod_name = None
         self._sandbox_name_hash = None
+
+    @property
+    def service_host(self) -> str:
+        """Return the stable in-cluster Service DNS name for this Sandbox."""
+        return f"{self.sandbox_id}.{self.namespace}.svc.cluster.local"
+
+    def service_url(self, port: int | None = None) -> str:
+        """Return an HTTP URL for the Sandbox Service and selected port."""
+        selected_port = port
+        if selected_port is None:
+            selected_port = self.connection_config.server_port
+        if type(selected_port) is not int or not 1 <= selected_port <= 65535:
+            raise ValueError("port must be an integer between 1 and 65535")
+        return f"http://{self.service_host}:{selected_port}"
         
     def get_pod_name(self) -> str:
         """Fetches the Sandbox object from Kubernetes and retrieves its current pod name."""
