@@ -131,6 +131,23 @@ describe("shared dashboard domain helpers", () => {
     }
   });
 
+  it("defaults optional warm pool replicas to 1 (v1beta1 server-side default)", () => {
+    const snapshot = createFixtureSnapshot();
+    // v1beta1 makes SandboxWarmPool.spec.replicas optional with a server-side
+    // default of 1. A snapshot that omits it must read as desired=1, not 0.
+    const poolWithoutReplicas: RawSandboxWarmPool = {
+      metadata: { name: "defaulted-pool", namespace: "demo", creationTimestamp: "2026-04-15T09:00:00Z" },
+      spec: { sandboxTemplateRef: { name: "python-secure" } },
+      status: {},
+    };
+    snapshot.warmPools = [poolWithoutReplicas];
+    const warmPools = normalizeWarmPools(snapshot, now);
+    expect(warmPools).toHaveLength(1);
+    expect(warmPools[0]?.desiredReplicas).toBe(1);
+    // desired=1 with no ready members reads as underfilled (0), not an empty pool.
+    expect(warmPools[0]?.fillRatio).toBe(0);
+  });
+
   it("detects stuck-pending claims based on age", () => {
     const snapshot = createFixtureSnapshot();
     // Move reference time forward by 10 minutes from the fixture's 'pending-claim' creation.
